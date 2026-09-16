@@ -1,0 +1,133 @@
+/* Design tokens — the single source of truth for colour, type, spacing,
+   radius and shadow. No raw hex, px, or rgba() should appear outside
+   this file; everything else reads these custom properties. */
+
+:root {
+  /* ---- colour: light (default) ---- */
+  --ground: #faf9f6;
+  --surface: #ffffff;
+  --surface-sunken: #f3f1ec;
+  --border: #e5e1d8;
+  --border-strong: #cfc9bc;
+  --text: #1a1917;
+  --text-muted: #6b665c;
+  --text-subtle: #918b7f;
+
+  --accent: #0f5257;
+  --accent-hover: #147c82;
+  --accent-weak: #e3efef;
+
+  /* Brand mark colour — fixed, not theme-swapped. This is the logo's
+     identity colour, independent of whichever interactive accent the
+     theme is using; it must stay legible against the fixed-dark logo
+     backing chip in both light and dark mode. */
+  --brand: #2a3b19;
+  --brand-text: #ffffff;
+
+  /* Text on a solid saturated fill (a filled button, an active tab, a
+     "done"/"failed" stage circle) — fixed white in both themes, not
+     theme-swapped like --text. See the note where this is consumed. */
+  --on-solid: #ffffff;
+
+  --success: #2e7d5b;
+  --success-weak: #e4f1ea;
+  --warning: #a9761b;
+  --warning-weak: #faf0dc;
+  --danger: #b23a2f;
+  --danger-weak: #fae8e5;
+
+  /* ---- type: three faces ---- */
+  --font-ui: "Cal Sans", "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --font-content: "Newsreader", Georgia, "Times New Roman", serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+
+  /* size / matching line-height, one scale, nothing between these */
+  --text-xs: 12px;
+  --leading-xs: 1.4;
+  --text-sm: 13px;
+  --leading-sm: 1.5;
+  --text-base: 15px;
+  --leading-base: 1.6;
+  --text-lg: 17px;
+  --leading-lg: 1.5;
+  --text-xl: 21px;
+  --leading-xl: 1.35;
+  --text-2xl: 27px;
+  --leading-2xl: 1.25;
+  --text-3xl: 34px;
+  --leading-3xl: 1.15;
+  --text-hero: 72px;
+  --leading-hero: 72px;
+
+  /* ---- spacing: 4px base, use only these ---- */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 20px;
+  --s6: 24px;
+  --s8: 32px;
+  --s10: 40px;
+  --s12: 48px;
+  --s16: 64px;
+
+  /* ---- radius: restrained ---- */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+  --r-full: 999px;
+
+  /* ---- shadow: two, not five. Cards get a border, not a shadow —
+     shadows are for things that float: menus, modals, toasts. ---- */
+  --shadow-sm: 0 1px 2px rgba(20, 18, 15, 0.06), 0 1px 1px rgba(20, 18, 15, 0.04);
+  --shadow-md: 0 8px 24px -8px rgba(20, 18, 15, 0.18);
+}
+
+/* ---- colour: dark, system preference ---- */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #17161a;
+    --surface: #1f1e23;
+    --surface-sunken: #27262c;
+    --border: #343239;
+    --border-strong: #46434c;
+    --text: #edeae3;
+    --text-muted: #a09a8e;
+    --text-subtle: #7a7469;
+
+    --accent: #4fb3b8;
+    --accent-hover: #6fcbd0;
+    --accent-weak: #16333a;
+
+    --success: #4fa87d;
+    --success-weak: #17302a;
+    --warning: #c99a3c;
+    --warning-weak: #332a18;
+    --danger: #d1685c;
+    --danger-weak: #331f1d;
+  }
+}
+
+/* ---- colour: dark, explicit choice — wins over system preference in
+   both directions (light-on-dark-system, dark-on-light-system) ---- */
+:root[data-theme="dark"] {
+  --ground: #17161a;
+  --surface: #1f1e23;
+  --surface-sunken: #27262c;
+  --border: #343239;
+  --border-strong: #46434c;
+  --text: #edeae3;
+  --text-muted: #a09a8e;
+  --text-subtle: #7a7469;
+
+  --accent: #4fb3b8;
+  --accent-hover: #6fcbd0;
+  --accent-weak: #16333a;
+
+  --success: #4fa87d;
+  --success-weak: #17302a;
+  --warning: #c99a3c;
+  --warning-weak: #332a18;
+  --danger: #d1685c;
+  --danger-weak: #331f1d;
+}

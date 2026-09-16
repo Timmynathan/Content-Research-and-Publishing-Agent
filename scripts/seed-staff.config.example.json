@@ -1,0 +1,14 @@
+[
+  {
+    "email": "manager@example.com",
+    "password": "change-me-1234",
+    "role": "manager",
+    "displayName": "Content Manager"
+  },
+  {
+    "email": "reviewer@example.com",
+    "password": "change-me-1234",
+    "role": "reviewer",
+    "displayName": "Content Reviewer"
+  }
+]
