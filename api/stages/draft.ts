@@ -1,4 +1,4 @@
-import { callClaudeForJson } from "../_lib/anthropic.js";
+import { callClaudeForJson, coerceToolArray } from "../_lib/anthropic.js";
 import { StageError } from "../_lib/errors.js";
 import { SEO_BEST_PRACTICES } from "../_lib/guidance.js";
 import { buildSourceContext } from "../_lib/sourceContext.js";
@@ -22,6 +22,7 @@ const DRAFT_TOOL_SCHEMA = {
   properties: {
     sections: {
       type: "array",
+      minItems: 1,
       description: "One entry per outline section, in the same order, using the same keys.",
       items: {
         type: "object",
@@ -119,6 +120,7 @@ export async function draftContent(ctx: HandlerCtx): Promise<HandlerResult> {
           toolDescription: "Record the full body and sourced claims for every outline section.",
           inputSchema: DRAFT_TOOL_SCHEMA,
           maxTokens: 8192,
+          isValid: (result) => (coerceToolArray(result?.sections, "sections")?.length ?? 0) > 0,
         });
       } catch (err: any) {
         throw new StageError(
@@ -127,14 +129,15 @@ export async function draftContent(ctx: HandlerCtx): Promise<HandlerResult> {
         );
       }
 
-      if (!result || !Array.isArray(result.sections) || result.sections.length === 0) {
+      const sections = coerceToolArray(result?.sections, "sections") as DraftToolInput["sections"] | null;
+      if (!sections || sections.length === 0) {
         throw new StageError(
           `The AI came back with an empty draft for the "${draft.angle}" option. This is usually a one-off — retrying this stage almost always works.`,
           { raw: result, draftId: draft.id },
         );
       }
 
-      const verifiedSections = verifyClaimGrounding(result.sections, selectedSourceIds);
+      const verifiedSections = verifyClaimGrounding(sections, selectedSourceIds);
       return { draftId: draft.id, sections: verifiedSections };
     }),
   );

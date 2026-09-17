@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { supabase } from "../../lib/supabaseClient";
 import {
   advanceRequest,
   toggleSourceSelection,
   proceedAnyway,
   goBackToResearching,
+  changeSourcesAndRedraft,
   markChannelOutputPosted,
   generateShortTitle,
   ApiError,
@@ -26,11 +27,13 @@ import SourceList from "../../components/SourceList";
 import SourceManagementForms from "../../components/SourceManagementForms";
 import AddPasteSourceForms from "../../components/AddPasteSourceForms";
 import DraftOptionsBoard from "../../components/DraftOptionsBoard";
+import AutomationMessage from "../../components/AutomationMessage";
 import ChannelPreview from "../../components/ChannelPreview";
 import { ChannelBadge } from "../../components/ChannelIcon";
 import { copyAndOpen, type CopyOpenableChannel } from "../../lib/copyAndOpen";
 import { STAGE_LABELS } from "../../lib/stageLabels";
 import { formatDateTime } from "../../lib/time";
+import { describeRevisionEvent } from "../../lib/revisionLog";
 import Button from "../../components/ui/Button";
 import IconButton from "../../components/ui/IconButton";
 import StatusPill from "../../components/ui/StatusPill";
@@ -39,15 +42,31 @@ import EmptyState from "../../components/ui/EmptyState";
 import Skeleton from "../../components/ui/Skeleton";
 import { ArrowLeftIcon } from "../../components/ui/icons";
 
-// Stages where adding a URL or pasting text is available — before
-// selection has run. Matches PRE_SELECTION_STAGES in api/sources.ts.
-const PRE_SELECTION_STAGES = new Set(["requested", "researching"]);
+// Stage where the "add a URL" / "paste source material" forms are
+// shown. api/sources.ts's own PRE_SELECTION_STAGES also allows
+// 'requested' (kept permissive there for the same reason EDITABLE_STAGES
+// stays permissive server-side — it's a backstop, not the UI). The UI
+// doesn't offer it at 'requested' though: with request creation now
+// accepting multiple sources up front and research auto-starting the
+// instant the page loads (see the auto-start effect below), a manager
+// would only ever see these forms at 'requested' for the fraction of a
+// second before it advances — not worth showing. 'researching' is the
+// one that matters: it's what "Go back" (further down) returns a
+// request to specifically so these forms are available again.
+const SHOW_ADD_SOURCE_FORMS_STAGE = "researching";
 
 // Stages where the manager can still edit which sources are selected.
 // Matches EDITABLE_STAGES in api/sources.ts — kept in sync by hand since
 // one lives in shared/types (client+server) risk and the other is a UI
 // concern; if you change one, change the other.
 const EDITABLE_STAGES = new Set(["sources_selected", "sources_insufficient"]);
+
+// Stages where "Change sources and redraft" is offered — the recovery
+// path now that source selection isn't a checkpoint the pipeline waits
+// at. Matches REDRAFT_UNLOCKABLE_STAGES in api/sources.ts. Discards the
+// current drafts and reopens source editing so the run can go again from
+// source selection with different sources.
+const REDRAFT_UNLOCKABLE_STAGES = new Set(["planned", "drafting", "evaluating", "revising", "ready_for_review"]);
 
 // Each stage's output gets its own view rather than one long scrolling
 // page — this maps a stage to the tab that shows what happened there.
@@ -63,17 +82,34 @@ function tabForStage(stage: Stage): TabId {
 // Plain-language action labels for the advance button, keyed by the
 // CURRENT stage (i.e. what clicking it is about to do) — "Run next
 // stage (Researching)" describes the internal state machine, not what
-// happens when you click it.
+// happens when you click it. No entry for 'drafting', 'queued',
+// 'planned', or 'evaluating': all four run automatically the moment
+// they're reached (see AUTO_ADVANCE_STAGES in api/advance.ts), so a
+// request never rests at any of them waiting for a click.
 const STAGE_ACTION_LABELS: Partial<Record<Stage, string>> = {
   requested: "Start research",
-  researching: "Select sources",
-  planned: "Write draft",
-  drafting: "Evaluate draft",
-  evaluating: "Continue",
+  // Only ever seen after clicking "Go back" (handleGoBack, below) — a fresh
+  // request never rests at 'researching' long enough to show this
+  // button, since it's chained straight through to source selection (see
+  // AUTO_ADVANCE_STAGES in api/advance.ts). No AI call happens here
+  // either way — it's a mechanical pass that marks every fetched source
+  // selected by default; the checkboxes below are where a human actually
+  // curates.
+  researching: "Continue",
+  // Same as 'researching' above: only ever seen if this request opted
+  // into review_sources_before_drafting, or just had its sources changed
+  // via "Change sources and redraft" (see the auto-advance effect
+  // below, which checks that flag). Otherwise this is skipped straight
+  // through — clicking it runs planning, drafting, AND scoring in one
+  // go (see the 'planned' and 'evaluating' entries in
+  // AUTO_ADVANCE_STAGES), landing directly on 'revising' or
+  // 'ready_for_review', whichever the scores call for.
+  sources_selected: "Write draft",
   revising: "Revise draft",
   approved: "Adapt for channels",
-  adapting: "Queue for publishing",
-  queued: "Publish",
+  // Queues LinkedIn/X (for manual posting) and sends the newsletter, in
+  // one click — see the 'queued' entry in AUTO_ADVANCE_STAGES.
+  adapting: "Publish",
 };
 
 function DetailSkeleton() {
@@ -96,6 +132,7 @@ function DetailSkeleton() {
 
 export default function RequestDetail() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [request, setRequest] = useState<ContentRequestRow | null>(null);
   const [sources, setSources] = useState<SourceRow[]>([]);
   const [events, setEvents] = useState<EventRow[]>([]);
@@ -109,6 +146,8 @@ export default function RequestDetail() {
   const [sourceActionError, setSourceActionError] = useState<string | null>(null);
   const [proceeding, setProceeding] = useState(false);
   const [goingBack, setGoingBack] = useState(false);
+  const [redrafting, setRedrafting] = useState(false);
+  const [redraftError, setRedraftError] = useState<string | null>(null);
   const [copiedOutputId, setCopiedOutputId] = useState<string | null>(null);
   const [copyOutputError, setCopyOutputError] = useState<string | null>(null);
   const [eventStageFilter, setEventStageFilter] = useState<Stage | null>(null);
@@ -207,12 +246,61 @@ export default function RequestDetail() {
     }
   }, [request]);
 
+  // Per the PRD, research through drafting/evaluation/revision runs
+  // unattended — no click required anywhere along the way. The pipeline
+  // stops in exactly two situations: it can't responsibly continue (a
+  // stage_error, or too few sources — see sources_insufficient, which
+  // isn't in the set below and so is never auto-advanced past), or a
+  // human is genuinely required (the review gate at ready_for_review,
+  // also not in the set). Everything else auto-advances:
+  // - 'requested': the very first research pass.
+  // - 'sources_selected': skipped only if this specific request opted
+  //   into review_sources_before_drafting — the one deliberate,
+  //   per-request pause the PRD leaves room for ("you may decide what
+  //   other inputs to collect"). Source edits (deselect, add, paste,
+  //   search) are no longer a checkpoint here; they're a recovery path,
+  //   available after the run finishes via "Change sources and redraft".
+  // - 'revising': a real, sometimes-slow step (Claude actually rewrites
+  //   failing sections) that can't be chained server-side in one request
+  //   the way the purely mechanical stages in AUTO_ADVANCE_STAGES
+  //   (api/advance.ts) are, so it's driven from here instead, re-firing
+  //   across as many rounds as MAX_DRAFT_ATTEMPTS allows.
+  // 'researching' is deliberately excluded: it's only ever a *resting*
+  // stage reached via "Go back" (a manager-initiated recovery action),
+  // and should wait for their explicit continue, not fire the instant
+  // they land there mid-edit. `advancing`/`advanceError` are re-entrancy
+  // guards, not a one-shot ref, since this has to keep firing across
+  // multiple stages and rounds, not just once. A failed round —
+  // server-recorded (stage_error) or network-level (advanceError) —
+  // always stops it; the manual button is how to retry. This automates
+  // the run for as long as this page stays open; it doesn't continue in
+  // the background if the manager navigates away or closes the tab,
+  // since there's no job queue behind it.
+  useEffect(() => {
+    if (!request || request.stage_error || advanceError || advancing) return;
+    const shouldAutoAdvance =
+      request.stage === "requested" ||
+      request.stage === "revising" ||
+      (request.stage === "sources_selected" && !request.review_sources_before_drafting);
+    if (shouldAutoAdvance) {
+      handleAdvance();
+    }
+  }, [request, advancing, advanceError]);
+
   async function handleAdvance() {
     if (!id) return;
     setAdvancing(true);
     setAdvanceError(null);
     try {
       const result = await advanceRequest(id);
+      if (result.stage === "published") {
+        // Nothing left to do on this page — LinkedIn and X still need a
+        // human to actually post them, and that happens from the Queue
+        // page, not here, so send the manager straight there instead of
+        // leaving them on a request that's already done.
+        navigate("/queue");
+        return;
+      }
       await load();
       // Jump straight to whatever tab shows the result of what just ran,
       // instead of leaving the manager on "Sources" wondering whether a
@@ -282,6 +370,21 @@ export default function RequestDetail() {
     }
   }
 
+  async function handleChangeSourcesAndRedraft() {
+    if (!id) return;
+    setRedrafting(true);
+    setRedraftError(null);
+    try {
+      await changeSourcesAndRedraft(id);
+      await load();
+      setActiveTab("sources");
+    } catch (err) {
+      setRedraftError(err instanceof ApiError ? err.message : "Failed to unlock sources.");
+    } finally {
+      setRedrafting(false);
+    }
+  }
+
   async function handleCopyAndOpen(outputId: string, channel: CopyOpenableChannel, body: string) {
     setCopyOutputError(null);
     try {
@@ -309,7 +412,7 @@ export default function RequestDetail() {
   const isEditable = EDITABLE_STAGES.has(request.stage);
   const isLocked = !isEditable && request.stage !== "requested" && request.stage !== "researching";
   const zeroRetrieved = retrievedCount === 0;
-  const isPreSelection = PRE_SELECTION_STAGES.has(request.stage);
+  const showAddSourceForms = request.stage === SHOW_ADD_SOURCE_FORMS_STAGE;
   // 'published' is the actual end of the pipeline — nothing to advance
   // to, so there's no "next stage" to run. Without this, the button
   // stayed visible and clicking it hit the terminal stub handler,
@@ -319,6 +422,18 @@ export default function RequestDetail() {
   // be fixed by "retrying," since there's still nothing to run.
   const isTerminal = request.stage === "published";
   const hasError = !isTerminal && Boolean(request.stage_error);
+
+  // Just the single most recent step of the auto-revise loop (events is
+  // fetched newest-first, so this is a find, not a filtered list) — a
+  // manager glancing at the screen at any moment should see one current
+  // status line, not a scrolling transcript of every round so far. Once
+  // the request has moved past ready_for_review, drafting/revising is
+  // done for good — showing a stale "reached the revision limit" note
+  // forever after approval would read as current status when it isn't.
+  const isPastReview = STAGE_ORDER.indexOf(request.stage as (typeof STAGE_ORDER)[number]) > STAGE_ORDER.indexOf("ready_for_review");
+  const latestRevisionEvent = isPastReview
+    ? null
+    : (events.find((e) => e.stage === "drafting" || e.stage === "evaluating" || e.stage === "revising") ?? null);
 
   return (
     <div className="stack">
@@ -352,38 +467,63 @@ export default function RequestDetail() {
           retrying={advancing}
         />
 
-        {isTerminal && (
-          <p className="subtitle">
-            This request has been fully published — there's nothing further to run.
-            {request.stage_error && " (A stray click here earlier produced an error message that can be ignored.)"}
-          </p>
-        )}
-
-        {advanceError && <ErrorState message={advanceError} />}
-
-        {request.stage === "ready_for_review" && !hasError && (
-          <p className="subtitle">Waiting for a reviewer to approve or reject this draft — there's nothing to run here yet.</p>
-        )}
-
         {!isInsufficient && !isTerminal && !hasError && request.stage !== "ready_for_review" && (
-          <div className="btn-row">
+          <div className="btn-row" style={{ marginTop: 12 }}>
             <Button variant="primary" onClick={handleAdvance} loading={advancing}>
-              {request.stage === "sources_selected"
-                ? "Continue to drafting"
-                : (STAGE_ACTION_LABELS[request.stage] ?? `Run next stage (${STAGE_LABELS[request.stage]})`)}
+              {STAGE_ACTION_LABELS[request.stage] ?? `Run next stage (${STAGE_LABELS[request.stage]})`}
             </Button>
           </div>
         )}
 
-        {isLocked && (
+        {REDRAFT_UNLOCKABLE_STAGES.has(request.stage) && (
           <div style={{ marginTop: 12 }}>
-            <p className="subtitle">
-              This request has moved past source selection into <strong>{STAGE_LABELS[request.stage]}</strong>.
-              Sources can no longer be changed here.
+            <div className="btn-row">
+              <Button variant="secondary" onClick={handleChangeSourcesAndRedraft} loading={redrafting}>
+                Change sources and redraft
+              </Button>
+            </div>
+            <p className="subtitle" style={{ marginTop: 6 }}>
+              Not happy with what the automation found or wrote? This discards the current draft options and reopens
+              the Sources tab for editing — run it again once you've changed what's selected.
             </p>
+            {redraftError && (
+              <div style={{ marginTop: 6 }}>
+                <ErrorState message={redraftError} />
+              </div>
+            )}
           </div>
         )}
       </div>
+
+      {/* Status updates from the automation, not the pipeline control
+          itself — kept out of the card above and styled as chat messages
+          (the app's own logo standing in as the sender) so they read as
+          the automation talking to you, not as more pipeline UI. */}
+      {(isTerminal || advanceError || (request.stage === "ready_for_review" && !hasError) || latestRevisionEvent) && (
+        <div className="stack stack-sm">
+          {isTerminal && (
+            <AutomationMessage>
+              This request is fully published. There's nothing further to run.
+              {request.stage_error && " (A stray click here earlier produced an error message that can be ignored.)"}
+            </AutomationMessage>
+          )}
+
+          {advanceError && <AutomationMessage tone="danger">{advanceError}</AutomationMessage>}
+
+          {request.stage === "ready_for_review" && !hasError && (
+            <AutomationMessage>
+              Waiting for a reviewer to approve or reject this draft. There's nothing to run here yet.
+            </AutomationMessage>
+          )}
+
+          {latestRevisionEvent && (
+            <AutomationMessage>
+              {advancing && request.stage === "revising" ? "Auto-revising: " : ""}
+              {describeRevisionEvent(latestRevisionEvent)}
+            </AutomationMessage>
+          )}
+        </div>
+      )}
 
       <div className="tab-bar">
         <button
@@ -452,15 +592,18 @@ export default function RequestDetail() {
           <div className="card">
             <h3>Sources</h3>
 
-            {isPreSelection && (
-              <div style={{ marginBottom: 16 }}>
-                <AddPasteSourceForms requestId={request.id} onChanged={load} />
-              </div>
+            {isLocked && (
+              <p className="subtitle" style={{ marginBottom: 12 }}>
+                This request has moved past source selection into <strong>{STAGE_LABELS[request.stage]}</strong>.
+                Sources can no longer be changed here.
+                {REDRAFT_UNLOCKABLE_STAGES.has(request.stage) &&
+                  ' Use "Change sources and redraft" on the Pipeline stage card above to start over with different ones.'}
+              </p>
             )}
 
-            {isEditable && !isInsufficient && sources.length > 0 && (
+            {showAddSourceForms && (
               <div style={{ marginBottom: 16 }}>
-                <SourceManagementForms requestId={request.id} maxRound={maxRound} onChanged={load} />
+                <AddPasteSourceForms requestId={request.id} onChanged={load} />
               </div>
             )}
 
@@ -468,10 +611,15 @@ export default function RequestDetail() {
 
             <SourceList
               sources={sources}
-              requestSourceUrl={request.source_url}
               editable={isEditable}
               onToggle={handleToggle}
             />
+
+            {isEditable && !isInsufficient && sources.length > 0 && (
+              <div style={{ marginTop: 16 }}>
+                <SourceManagementForms requestId={request.id} maxRound={maxRound} onChanged={load} />
+              </div>
+            )}
           </div>
         </div>
       )}

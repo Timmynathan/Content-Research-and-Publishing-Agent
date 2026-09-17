@@ -3,9 +3,11 @@ import { StageError } from "../_lib/errors.js";
 import { EVALUATION_RUBRIC } from "../_lib/guidance.js";
 import type { HandlerCtx, HandlerResult } from "./types.js";
 import {
+  AVERAGE_PASS_THRESHOLD,
   MAX_DRAFT_ATTEMPTS,
   PASS_SCORE_THRESHOLD,
   RUBRIC_CRITERIA,
+  STRICT_RUBRIC_CRITERIA,
   type DraftRow,
   type EvaluationRow,
   type RubricCriterion,
@@ -149,7 +151,10 @@ export async function runEvaluation(ctx: HandlerCtx): Promise<HandlerResult> {
 
       const failingSections = (result.failing_sections ?? []).filter((key) => knownKeys.has(`${draft.id}:${key}`));
       const overall = RUBRIC_CRITERIA.reduce((sum, c) => sum + result.scores[c].score, 0) / RUBRIC_CRITERIA.length;
-      const passed = failingSections.length === 0 && RUBRIC_CRITERIA.every((c) => result.scores[c].score >= PASS_SCORE_THRESHOLD);
+      const passed =
+        failingSections.length === 0 &&
+        STRICT_RUBRIC_CRITERIA.every((c) => result.scores[c].score >= PASS_SCORE_THRESHOLD) &&
+        overall >= AVERAGE_PASS_THRESHOLD;
 
       return {
         draft_id: draft.id,

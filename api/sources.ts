@@ -270,7 +270,16 @@ async function handleToggle(request: ContentRequestRow, body: ActionBody, actorI
     throw new HttpError(400, "Cannot select a source that failed to fetch: its content isn't available.");
   }
 
-  const { error: updateError } = await supabaseAdmin.from("sources").update({ selected }).eq("id", sourceId);
+  // Recorded so the Sources tab can show a real reason for an excluded
+  // source instead of a bare, unexplained "not selected" label — there's
+  // no AI judgment anymore to ask why, so the only honest reason
+  // available is that a person chose to leave it out. Cleared back to
+  // null on re-selection: a currently-included source has nothing to
+  // explain.
+  const { error: updateError } = await supabaseAdmin
+    .from("sources")
+    .update({ selected, selection_reason: selected ? null : "A manager excluded it." })
+    .eq("id", sourceId);
   if (updateError) throw new HttpError(500, `Failed to update source: ${updateError.message}`);
 
   await logEvent(request.id, request.stage, selected ? "source_selected" : "source_deselected", true, {
@@ -322,11 +331,15 @@ async function handleSearchMore(request: ContentRequestRow, body: ActionBody) {
   }
 
   const results = await Promise.all(candidates.map((url) => scrapeUrl(url)));
-  // Newly found sources default to unselected — they haven't been
-  // through Claude's judgment (that only runs once, on the initial
-  // pass) or a manager's review yet.
+  // Newly found sources default to unselected — a manager hasn't looked
+  // at them yet, unlike the initial batch (finalizeSources marks those
+  // selected automatically).
   const rows = results.map((result) =>
-    scrapeResultToRow(request.id, result, { selected: false, selectionReason: null, searchRound: newRound }),
+    scrapeResultToRow(request.id, result, {
+      selected: false,
+      selectionReason: "It was found via search and hasn't been reviewed yet.",
+      searchRound: newRound,
+    }),
   );
 
   const { error: insertError } = await supabaseAdmin.from("sources").insert(rows);
@@ -384,9 +397,15 @@ async function handleChangeSourcesAndRedraft(request: ContentRequestRow, actorId
   const { error: deleteError } = await supabaseAdmin.from("drafts").delete().eq("request_id", request.id);
   if (deleteError) throw new HttpError(500, `Failed to discard drafts: ${deleteError.message}`);
 
+  // Also flips review_sources_before_drafting on, regardless of what it
+  // was: a manager who just discarded a run to fix the sources almost
+  // certainly wants to look before the pipeline drafts again, not have
+  // it auto-advance past sources_selected before they can touch
+  // anything (see the client's auto-advance effect in RequestDetail.tsx,
+  // which checks exactly this flag).
   const { error: updateError } = await supabaseAdmin
     .from("content_requests")
-    .update({ stage: "sources_selected", stage_error: null, thinly_sourced: false })
+    .update({ stage: "sources_selected", stage_error: null, thinly_sourced: false, review_sources_before_drafting: true })
     .eq("id", request.id);
   if (updateError) throw new HttpError(500, `Failed to unlock sources: ${updateError.message}`);
 
@@ -402,9 +421,9 @@ async function handleChangeSourcesAndRedraft(request: ContentRequestRow, actorId
 // doesn't dedupe against rows already in the table from a prior pass).
 // 'researching' is the step right before selection, so this makes the
 // add-URL/paste forms available again and lets the manager re-trigger
-// selection (Run next stage) to have Claude re-judge everything,
-// including anything just added. Existing sources rows are kept, not
-// deleted — nothing already found is lost.
+// finalizeSources (Continue) to mark anything just added as selected
+// too. Existing sources rows are kept, not deleted — nothing already
+// found is lost.
 async function handleGoBack(request: ContentRequestRow, actorId: string) {
   if (!EDITABLE_STAGES.has(request.stage)) {
     throw new HttpError(409, `Cannot go back from stage '${request.stage}'.`);

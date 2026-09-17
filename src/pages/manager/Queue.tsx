@@ -28,7 +28,7 @@ interface QueueRow {
     validation: { issues?: string[] } | null;
     drafts: {
       request_id: string;
-      content_requests: { idea: string } | null;
+      content_requests: { idea: string; short_title: string | null } | null;
     } | null;
   } | null;
 }
@@ -51,7 +51,7 @@ export default function Queue() {
   async function load() {
     const { data, error } = await supabase
       .from("publish_queue")
-      .select("*, channel_outputs(subject, body, valid, validation, drafts(request_id, content_requests(idea)))")
+      .select("*, channel_outputs(subject, body, valid, validation, drafts(request_id, content_requests(idea, short_title)))")
       .order("scheduled_for", { ascending: false })
       .returns<QueueRow[]>();
     if (error) setError(error.message);
@@ -116,7 +116,8 @@ export default function Queue() {
       {items && items.length > 0 && (
         <div className="stack">
           {items.map((item) => {
-            const idea = item.channel_outputs?.drafts?.content_requests?.idea ?? "(request no longer available)";
+            const contentRequest = item.channel_outputs?.drafts?.content_requests;
+            const idea = contentRequest?.short_title ?? contentRequest?.idea ?? "(request no longer available)";
             const requestId = item.channel_outputs?.drafts?.request_id;
             return (
               <div key={item.id} className="card">

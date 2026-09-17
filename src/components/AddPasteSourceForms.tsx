@@ -4,12 +4,14 @@ import Field from "./ui/Field";
 import Button from "./ui/Button";
 import ErrorState from "./ui/ErrorState";
 
-// Manager-only. Shown only before source selection has run (stage
-// 'requested' or 'researching') — anything added here is picked up
-// automatically by the next Claude selection pass, the same as an
-// automatically-discovered source. This is the escape hatch for
-// material the scraper can't reach: social posts, PDFs, paywalled
-// articles, internal notes, interview transcripts.
+// Manager-only. Shown only at the 'researching' stage (see
+// RequestDetail.tsx) — anything added here is picked up automatically by
+// the next Claude selection pass, the same as an automatically-discovered
+// source. This is the escape hatch for material the scraper can't reach:
+// social posts, PDFs, paywalled articles, internal notes, interview
+// transcripts. (Supplying sources up front, at request creation, uses
+// this same add-URL action directly from NewRequest.tsx — this form is
+// for adding more afterward, e.g. via "Go back".)
 export default function AddPasteSourceForms({
   requestId,
   onChanged,

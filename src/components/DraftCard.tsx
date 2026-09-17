@@ -82,10 +82,9 @@ export default function DraftCard({
         <StatusPill tone="neutral">attempt {draft.attempt}</StatusPill>
         {latestEvaluation && (
           <StatusPill tone={latestEvaluation.passed ? "success" : "warning"}>
-            {latestEvaluation.passed ? "meets rubric" : "below rubric"}
+            {latestEvaluation.passed ? "passed" : "failed"}
           </StatusPill>
         )}
-        {!latestEvaluation && <StatusPill tone="neutral">not yet scored</StatusPill>}
       </div>
       <div className="list-row-title" style={{ marginBottom: 4 }}>
         Option {draft.variant}: {draft.angle}

@@ -133,7 +133,7 @@ h3 {
 .topbar {
   display: flex;
   align-items: center;
-  padding: var(--s1) var(--s5);
+  padding: 0 var(--s5);
   background: var(--brand);
   color: var(--brand-text);
 }
@@ -151,8 +151,12 @@ h3 {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 100px;
-  height: 100px;
+  /* Sized to just wrap the 56px logo image below (a few px of backing
+     visible around it). Was 100px, then 88px around an untouched 80px
+     image; this time the image itself was shrunk too since padding
+     alone had nothing meaningful left to trim. */
+  width: 64px;
+  height: 64px;
   border-radius: var(--r-md);
   /* Fixed, not theme-swapped: the logo mark itself is a fixed light
      gray, so it needs a reliably dark backing to read against,
@@ -163,8 +167,8 @@ h3 {
 }
 
 .brand-logo img {
-  width: 80px;
-  height: 80px;
+  width: 56px;
+  height: 56px;
   display: block;
 }
 
@@ -929,10 +933,24 @@ button.stage-circle:hover {
   color: var(--text);
 }
 
+/* A source you've excluded fades — everything describing the source
+   itself (title, domain, excerpt) — so "included" reads as the default,
+   visually louder state and "excluded" recedes. The checkbox and the
+   reason it's excluded (below) are deliberately exempt: the checkbox
+   because it's still the one live control on a faded row, the reason
+   because it should be the most legible thing here, not the least. */
+.source-row.is-excluded .source-row-domain,
+.source-row.is-excluded .source-row-title,
+.source-row.is-excluded .source-row-excerpt {
+  opacity: 0.5;
+}
+
 .source-row-reason {
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  margin-top: 2px;
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--danger);
+  background: var(--danger-weak);
+  margin-top: var(--s2);
 }
 
 .source-row-excerpt {
@@ -979,6 +997,60 @@ button.stage-circle:hover {
 .list-row-title {
   font-weight: 600;
   font-size: var(--text-sm);
+}
+
+/* ========================= automation messages ========================== */
+
+.automation-message {
+  display: flex;
+  /* Centered, not flex-start — the 28px avatar circle is shorter than
+     the bubble (padding + line-height), so top-aligning it left the
+     avatar looking like it floated above the bubble instead of sitting
+     next to it. */
+  align-items: center;
+  gap: var(--s2);
+}
+
+.automation-message + .automation-message {
+  margin-top: var(--s2);
+}
+
+.automation-message-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-full);
+  /* Fixed, not theme-swapped — same reasoning as .brand-logo: the mark
+     needs a reliably dark backing regardless of theme. */
+  background: var(--brand);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.automation-message-avatar img {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
+.automation-message-bubble {
+  background: var(--surface-sunken);
+  color: var(--text);
+  border-radius: var(--r-lg);
+  /* The corner nearest the avatar stays sharp — the one visual cue that
+     reads as "speech bubble" rather than just a rounded card. */
+  border-top-left-radius: var(--r-sm);
+  padding: var(--s2) var(--s3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  max-width: 520px;
+}
+
+.automation-message.is-danger .automation-message-bubble {
+  background: var(--danger-weak);
+  color: var(--danger);
 }
 
 .list-row-link {

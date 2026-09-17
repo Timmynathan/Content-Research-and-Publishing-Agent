@@ -50,7 +50,7 @@ export default function ReviewQueue() {
         <div className="stack">
           {requests.map((r) => (
             <Link key={r.id} to={`/review/${r.id}`} className="card card-link">
-              <div style={{ fontWeight: 600, marginBottom: 4 }}>{r.idea}</div>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>{r.short_title ?? r.idea}</div>
               <p className="subtitle row">
                 For {r.target_audience} · waiting {relativeAge(r.created_at)}
                 {r.thinly_sourced && <StatusPill tone="warning">thinly sourced</StatusPill>}

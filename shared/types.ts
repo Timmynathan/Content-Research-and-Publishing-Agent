@@ -62,6 +62,8 @@ export interface ContentRequestRow {
   tone: string | null;
   /** Set when a manager explicitly chooses "proceed anyway" out of sources_insufficient. */
   thinly_sourced: boolean;
+  /** Opt-in, off by default — pauses the otherwise-unattended pipeline at 'sources_selected' for this request only. */
+  review_sources_before_drafting: boolean;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -181,8 +183,9 @@ export interface DraftRow {
 export const MAX_DRAFT_ATTEMPTS = 3;
 
 // Rubric scale: 1-5 per criterion (the rubric doc itself doesn't fix a
-// scale, this is our choice). A draft "passes" when every criterion
-// scores at least this and no section is flagged as failing.
+// scale, this is our choice). Only STRICT_RUBRIC_CRITERIA (below) must
+// individually clear this bar; the rest can be weaker as long as the
+// overall average clears AVERAGE_PASS_THRESHOLD.
 export const PASS_SCORE_THRESHOLD = 4;
 
 export const RUBRIC_CRITERIA = [
@@ -198,6 +201,21 @@ export const RUBRIC_CRITERIA = [
 ] as const;
 
 export type RubricCriterion = (typeof RUBRIC_CRITERIA)[number];
+
+// Criteria where a low score means the content is actually wrong or
+// unsupported, not just weaker style — these can't be averaged away by
+// strong scores elsewhere, so they're checked individually against
+// PASS_SCORE_THRESHOLD regardless of the overall average.
+export const STRICT_RUBRIC_CRITERIA: readonly RubricCriterion[] = ["Source Grounding", "Factual Consistency"];
+
+// A draft can still pass with one or two merely-weaker (non-strict)
+// criteria as long as the average across all 9 clears this bar.
+// Requiring literally every one of the 9 criteria to individually hit
+// PASS_SCORE_THRESHOLD made a first-attempt pass vanishingly unlikely by
+// construction (roughly 0.8^9, ~13%, even for a genuinely solid draft),
+// turning "evaluate" into an almost-automatic "revise once" step
+// regardless of actual draft quality.
+export const AVERAGE_PASS_THRESHOLD = 3.5;
 
 export interface EvaluationRow {
   id: string;

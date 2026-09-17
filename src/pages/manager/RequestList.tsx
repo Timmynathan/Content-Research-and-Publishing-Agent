@@ -68,7 +68,7 @@ export default function RequestList() {
                   <th>Idea</th>
                   <th>Audience</th>
                   <th>Stage</th>
-                  <th className="num">Age</th>
+                  <th className="num">Submitted</th>
                 </tr>
               </thead>
               <tbody>
@@ -76,7 +76,7 @@ export default function RequestList() {
                   <tr key={r.id} className="is-linked" onClick={() => navigate(`/request/${r.id}`)}>
                     <td className="wrap">
                       <Link to={`/request/${r.id}`} onClick={(e) => e.stopPropagation()}>
-                        {r.idea}
+                        {r.short_title ?? r.idea}
                       </Link>
                     </td>
                     <td className="wrap">{r.target_audience}</td>

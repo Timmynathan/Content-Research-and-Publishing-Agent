@@ -48,10 +48,7 @@ export default function Landing() {
             <h1 className="auth-hero-headline">
               Publish and <span className="auth-hero-highlight">distribute content</span> to streamline your workflow
             </h1>
-            <p className="auth-hero-sub">
-              Every draft is grounded in real sources, scored against a rubric, and reviewed by a person — before it
-              reaches LinkedIn, X, or your newsletter.
-            </p>
+            <p className="auth-hero-sub">Real sources, quality checked, approved by a person. Then it goes out.</p>
 
             <Link to="/sign-in">
               <button className="auth-hero-cta">

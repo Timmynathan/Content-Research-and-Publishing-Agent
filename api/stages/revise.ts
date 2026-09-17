@@ -1,4 +1,4 @@
-import { callClaudeForJson } from "../_lib/anthropic.js";
+import { callClaudeForJson, coerceToolArray } from "../_lib/anthropic.js";
 import { StageError } from "../_lib/errors.js";
 import { SEO_BEST_PRACTICES } from "../_lib/guidance.js";
 import { buildSourceContext } from "../_lib/sourceContext.js";
@@ -22,6 +22,7 @@ const REVISE_TOOL_SCHEMA = {
   properties: {
     sections: {
       type: "array",
+      minItems: 1,
       description: "Exactly the sections being revised — same keys as requested, rewritten to fix the stated problems.",
       items: {
         type: "object",
@@ -161,6 +162,7 @@ export async function reviseContent(ctx: HandlerCtx): Promise<HandlerResult> {
           toolDescription: `Record the rewritten body and claims for exactly these sections: ${[...failingKeys].join(", ")}.`,
           inputSchema: REVISE_TOOL_SCHEMA,
           maxTokens: 6144,
+          isValid: (result) => (coerceToolArray(result?.sections, "sections")?.length ?? 0) > 0,
         });
       } catch (err: any) {
         throw new StageError(
@@ -169,7 +171,8 @@ export async function reviseContent(ctx: HandlerCtx): Promise<HandlerResult> {
         );
       }
 
-      if (!result || !Array.isArray(result.sections) || result.sections.length === 0) {
+      const sections = coerceToolArray(result?.sections, "sections") as ReviseToolInput["sections"] | null;
+      if (!sections || sections.length === 0) {
         throw new StageError(
           `The AI came back with no revised text for "${draft.angle}". This is usually a one-off — retrying this stage almost always works.`,
           { raw: result, draftId: draft.id },
@@ -182,13 +185,13 @@ export async function reviseContent(ctx: HandlerCtx): Promise<HandlerResult> {
       // the requested sections are still valid on their own. What we
       // must not accept silently is the opposite: a requested section
       // that never came back.
-      const requestedSections = result.sections.filter((s) => failingKeys.has(s.key));
+      const requestedSections = sections.filter((s) => failingKeys.has(s.key));
       const returnedKeys = new Set(requestedSections.map((s) => s.key));
       const missing = [...failingKeys].filter((k) => !returnedKeys.has(k));
       if (missing.length > 0) {
         throw new StageError(
           `The AI's revision of "${draft.angle}" was missing ${missing.length} of the requested section${missing.length === 1 ? "" : "s"}. This is usually a one-off — retrying this stage almost always works.`,
-          { draftId: draft.id, expected: [...failingKeys], got: result.sections.map((s) => s.key) },
+          { draftId: draft.id, expected: [...failingKeys], got: sections.map((s) => s.key) },
         );
       }
 

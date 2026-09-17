@@ -17,11 +17,12 @@ import { useParams, useNavigate } from "react-router-dom";
 import { supabase } from "../../lib/supabaseClient";
 import { submitReviewDecision, ApiError } from "../../lib/api";
 import type { ContentRequestRow, DraftRow, EvaluationRow, SourceRow } from "../../../shared/types";
-import DraftCard from "../../components/DraftCard";
+import DraftOptionsBoard from "../../components/DraftOptionsBoard";
 import SourceList from "../../components/SourceList";
 import Field from "../../components/ui/Field";
 import Button from "../../components/ui/Button";
 import ErrorState from "../../components/ui/ErrorState";
+import EmptyState from "../../components/ui/EmptyState";
 import Skeleton from "../../components/ui/Skeleton";
 
 function ReviewSkeleton() {
@@ -74,7 +75,13 @@ export default function ReviewDetail() {
         .order("created_at", { ascending: true })
         .returns<EvaluationRow[]>();
       setEvaluations(evaluationsData ?? []);
-      setChosenDraftId((current) => current ?? draftIds[0] ?? null);
+      // Only ever default-select a draft that actually passed — a
+      // reviewer shouldn't land on a failing option just because it
+      // happened to be first.
+      const passingIds = (draftsData ?? [])
+        .filter((d) => (evaluationsData ?? []).some((e) => e.draft_id === d.id && e.attempt === d.attempt && e.passed))
+        .map((d) => d.id);
+      setChosenDraftId((current) => current ?? passingIds[0] ?? null);
     }
   }, [id]);
 
@@ -99,7 +106,16 @@ export default function ReviewDetail() {
   if (loadError) return <ErrorState message={loadError} />;
   if (!request) return <ReviewSkeleton />;
 
-  const flaggedByDraft = drafts.map((d) => ({
+  // A reviewer only ever sees options that actually passed evaluation —
+  // one still sitting at ready_for_review despite failing (it hit the
+  // revision attempt cap; see decideNextStage in api/stages/evaluate.ts)
+  // is filtered out here rather than shown flagged, so there's nothing
+  // to accidentally approve that the rubric already rejected.
+  const passingDrafts = drafts.filter((d) =>
+    evaluations.some((e) => e.draft_id === d.id && e.attempt === d.attempt && e.passed),
+  );
+
+  const flaggedByDraft = passingDrafts.map((d) => ({
     draft: d,
     flagged: d.sections.flatMap((s) => s.claims.filter((c) => c.flagged).map((c) => ({ section: s.heading, claim: c }))),
   }));
@@ -148,24 +164,22 @@ export default function ReviewDetail() {
 
       <div className="card">
         <h3>Sources</h3>
-        <SourceList sources={sources.filter((s) => s.selected)} requestSourceUrl={request.source_url} />
+        <SourceList sources={sources.filter((s) => s.selected)} />
       </div>
 
-      <h3 style={{ margin: 0 }}>Article options — pick one</h3>
-      {drafts.map((draft) => (
-        <div key={draft.id} className="stack stack-sm">
-          <label className="card row" style={{ cursor: "pointer" }}>
-            <input
-              type="radio"
-              name="chosenDraft"
-              checked={chosenDraftId === draft.id}
-              onChange={() => setChosenDraftId(draft.id)}
-            />
-            <strong>Approve/reject this option</strong>
-          </label>
-          <DraftCard draft={draft} evaluationsForDraft={evaluations.filter((e) => e.draft_id === draft.id)} sources={sources} />
-        </div>
-      ))}
+      {passingDrafts.length > 0 ? (
+        <DraftOptionsBoard
+          drafts={passingDrafts}
+          evaluations={evaluations}
+          sources={sources}
+          selection={{ selectedId: chosenDraftId, onSelect: setChosenDraftId }}
+        />
+      ) : (
+        <EmptyState
+          title="No option passed evaluation"
+          message="Every drafted option is still flagged below the quality bar even after the revision limit. There's nothing here a reviewer should approve as-is — this needs a manager to revisit the sources or the brief, not a review decision."
+        />
+      )}
 
       <div className="card">
         <h3>Decision</h3>

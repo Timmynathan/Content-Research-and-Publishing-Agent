@@ -1,5 +1,4 @@
 import type { SourceRow } from "../../shared/types";
-import { FETCH_FAILURE_LABELS } from "../lib/fetchFailureLabels";
 import { stripMarkdownForDisplay } from "../lib/stripMarkdown";
 import StatusPill from "./ui/StatusPill";
 import { ChevronRightIcon } from "./ui/icons";
@@ -13,14 +12,15 @@ function domainOf(url: string | null): string | null {
   }
 }
 
+// Only ever called with sources that fetched successfully — a source
+// with no content can't be included or excluded, just discarded, so
+// SourceList filters those out entirely before this ever renders.
 function SourceRowView({
   source,
-  isRequestSourceUrl,
   editable,
   onToggle,
 }: {
   source: SourceRow;
-  isRequestSourceUrl: boolean;
   editable?: boolean;
   onToggle?: (selected: boolean) => void;
 }) {
@@ -28,8 +28,8 @@ function SourceRowView({
   const displayTitle = source.title ?? source.url ?? "(pasted text, no title)";
 
   return (
-    <div className="source-row">
-      {editable && source.fetch_ok && (
+    <div className={`source-row${!source.selected ? " is-excluded" : ""}`}>
+      {editable && (
         <span className="source-row-checkbox">
           <input
             type="checkbox"
@@ -63,36 +63,20 @@ function SourceRowView({
           )}
         </div>
 
-        {!source.fetch_ok && (
-          <div className="source-row-reason">
-            <StatusPill tone="warning">
-              {source.failure_reason ? FETCH_FAILURE_LABELS[source.failure_reason] : "Couldn't be read"}
-            </StatusPill>
-            {isRequestSourceUrl && <> This was your supplied source — go back and paste its text directly instead.</>}
-            {source.fetch_error && (
-              <details style={{ marginTop: 4 }}>
-                <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--text-subtle)" }}>Raw error</summary>
-                <p className="mono" style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>
-                  {source.fetch_error}
-                </p>
-              </details>
-            )}
-          </div>
+        {/* Only shown for an excluded source — the reason is always
+            populated for one of those (see api/sources.ts: a manual
+            uncheck, an unreviewed search result, or — for a request from
+            before source selection stopped being AI-judged — Claude's
+            original explanation). An included source has nothing more
+            interesting to say than "included," which the checkbox
+            already shows. A colon, not "because" — a "because" lead-in
+            forces every reason to grammatically continue it, which broke
+            for legacy, AI-written reasons that are their own standalone
+            sentence ("A listicle of tool picks..."), not a clause. A
+            colon just introduces the reason, whatever shape it's in. */}
+        {!source.selected && source.selection_reason && (
+          <div className="source-row-reason">This source was not selected: {source.selection_reason}</div>
         )}
-
-        {source.fetch_ok && !source.selected && source.selection_reason !== null && (
-          <div className="source-row-reason">
-            <StatusPill tone="neutral">not selected</StatusPill>
-          </div>
-        )}
-
-        {source.fetch_ok && !source.selected && source.selection_reason === null && (
-          <div className="source-row-reason">
-            <StatusPill tone="neutral">awaiting selection</StatusPill>
-          </div>
-        )}
-
-        {source.selection_reason && <div className="source-row-reason">{source.selection_reason}</div>}
 
         {source.excerpt && (
           <details style={{ marginTop: 6 }}>
@@ -107,27 +91,30 @@ function SourceRowView({
 
 /**
  * Leads with what was used, not what failed — "N sources used" is the
- * headline; the skipped group (fetch failures and anything not
- * selected) is collapsed by default rather than presented as equally
- * weighted rows.
+ * headline; anything not selected is collapsed by default rather than
+ * presented as equally weighted rows. Sources that failed to fetch are
+ * discarded entirely rather than shown anywhere: there's no content to
+ * include or exclude, so nothing about them is actionable here — a
+ * failure worth knowing about surfaces through other means (events log,
+ * the sources_insufficient flow), not as a dead row in this list.
  */
 export default function SourceList({
   sources,
-  requestSourceUrl,
   editable = false,
   onToggle,
 }: {
   sources: SourceRow[];
-  requestSourceUrl?: string | null;
   editable?: boolean;
   onToggle?: (sourceId: string, selected: boolean) => void;
 }) {
-  if (sources.length === 0) {
+  const fetched = sources.filter((s) => s.fetch_ok);
+
+  if (fetched.length === 0) {
     return <p className="subtitle">No sources retrieved yet.</p>;
   }
 
-  const used = sources.filter((s) => s.fetch_ok && s.selected);
-  const skipped = sources.filter((s) => !s.fetch_ok || !s.selected);
+  const used = fetched.filter((s) => s.selected);
+  const skipped = fetched.filter((s) => !s.selected);
 
   return (
     <div>
@@ -142,7 +129,6 @@ export default function SourceList({
         <SourceRowView
           key={s.id}
           source={s}
-          isRequestSourceUrl={Boolean(s.url && s.url === requestSourceUrl)}
           editable={editable}
           onToggle={editable ? (selected) => onToggle?.(s.id, selected) : undefined}
         />
@@ -156,14 +142,13 @@ export default function SourceList({
             <span className="disclosure-chevron">
               <ChevronRightIcon size={13} />
             </span>{" "}
-            {skipped.length} skipped
+            {skipped.length} not selected
           </summary>
           <div style={{ marginTop: 4 }}>
             {skipped.map((s) => (
               <SourceRowView
                 key={s.id}
                 source={s}
-                isRequestSourceUrl={Boolean(s.url && s.url === requestSourceUrl)}
                 editable={editable}
                 onToggle={editable ? (selected) => onToggle?.(s.id, selected) : undefined}
               />

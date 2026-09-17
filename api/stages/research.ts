@@ -1,7 +1,7 @@
 import { scrapeUrl, searchWeb, type ScrapeResult } from "../_lib/firecrawl.js";
 import { StageError } from "../_lib/errors.js";
 import type { HandlerCtx, HandlerResult } from "./types.js";
-import { EXCLUDED_SEARCH_DOMAINS, type SourceInsert } from "../../shared/types.js";
+import { EXCLUDED_SEARCH_DOMAINS, type SourceInsert, type SourceRow } from "../../shared/types.js";
 import { buildSearchQuery } from "../_lib/searchQuery.js";
 
 // How many successfully-fetched sources we're aiming for. Search
@@ -64,10 +64,16 @@ function toSourceRow(requestId: string, result: ScrapeResult): SourceInsert {
 /**
  * Stage handler for 'requested' -> 'researching'.
  *
- * Scrapes the supplied source_url (if any) and tops up from web search
- * results — excluding platforms known to be unscrapable — until either
- * TARGET_SUCCESSFUL_SOURCES successful fetches are reached or search
- * candidates run out. Writes ONE sources row per URL actually attempted,
+ * Any source URLs the manager supplied at request creation are already
+ * in the `sources` table by the time this runs (added via the same
+ * add-URL path as the manual "add a source" form, before this stage's
+ * auto-start fires — see NewRequest.tsx and api/sources.ts's add_url
+ * action). This only tops up from web search — excluding platforms known
+ * to be unscrapable — counting what's already there toward the target
+ * and skipping any URL already attempted, until either
+ * TARGET_SUCCESSFUL_SOURCES successful fetches are reached (across
+ * manually-supplied and searched sources combined) or search candidates
+ * run out. Writes ONE sources row per NEW url actually attempted,
  * including failures — a source that could not be read is information,
  * not noise to discard.
  *
@@ -80,14 +86,18 @@ function toSourceRow(requestId: string, result: ScrapeResult): SourceInsert {
 export async function runResearch(ctx: HandlerCtx): Promise<HandlerResult> {
   const { request, supabase } = ctx;
 
-  const rows: SourceInsert[] = [];
-  let successCount = 0;
+  const { data: existingSources, error: existingError } = await supabase
+    .from("sources")
+    .select("*")
+    .eq("request_id", request.id)
+    .returns<SourceRow[]>();
+  if (existingError) throw new StageError(`Failed to load existing sources: ${existingError.message}`);
 
-  if (request.source_url) {
-    const result = await scrapeUrl(request.source_url);
-    rows.push(toSourceRow(request.id, result));
-    if (result.ok) successCount++;
-  }
+  const existing = existingSources ?? [];
+  let successCount = existing.filter((s) => s.fetch_ok).length;
+  const alreadyConsidered = new Set(existing.map((s) => s.url).filter((u): u is string => Boolean(u)));
+
+  const rows: SourceInsert[] = [];
 
   let searchHits: { url: string; title: string | null }[] = [];
   if (successCount < TARGET_SUCCESSFUL_SOURCES) {
@@ -96,17 +106,16 @@ export async function runResearch(ctx: HandlerCtx): Promise<HandlerResult> {
       searchHits = await searchWeb(query, MAX_SEARCH_CANDIDATES, EXCLUDED_SEARCH_DOMAINS);
     } catch (err: any) {
       // A failed search is only fatal if we also have nothing else to
-      // fall back on (no source_url already scraped).
-      if (rows.length === 0) {
+      // fall back on (no manually-supplied sources already in place).
+      if (existing.length === 0) {
         throw new StageError(
-          "The web search failed and there was no source URL to fall back on. Try again, or go back and add a source URL or paste material directly.",
+          "The web search failed and there were no manually supplied sources to fall back on. Try again, or go back and add a source URL or paste material directly.",
           { error: String(err) },
         );
       }
     }
   }
 
-  const alreadyConsidered = new Set(rows.map((r) => r.url));
   const candidates = searchHits.map((h) => h.url).filter((url) => !alreadyConsidered.has(url));
 
   let i = 0;
@@ -120,24 +129,27 @@ export async function runResearch(ctx: HandlerCtx): Promise<HandlerResult> {
     }
   }
 
-  if (rows.length === 0) {
+  if (rows.length === 0 && existing.length === 0) {
     throw new StageError(
-      "No source URL was supplied and the web search didn't return anything to read. Go back and add a source URL or paste material directly, or try again in case this was temporary.",
+      "No sources were supplied and the web search didn't return anything to read. Go back and add a source URL or paste material directly, or try again in case this was temporary.",
       { idea: request.idea, keywords: request.keywords },
     );
   }
 
-  const { error: insertError } = await supabase.from("sources").insert(rows);
-  if (insertError) {
-    throw new StageError(`Failed to write sources rows: ${insertError.message}`, { rows });
+  if (rows.length > 0) {
+    const { error: insertError } = await supabase.from("sources").insert(rows);
+    if (insertError) {
+      throw new StageError(`Failed to write sources rows: ${insertError.message}`, { rows });
+    }
   }
 
   return {
     nextStage: "researching",
     detail: {
+      preExisting: existing.length,
       attempted: rows.length,
-      successful: successCount,
-      failed: rows.length - successCount,
+      successful: rows.filter((r) => r.fetch_ok).length,
+      failed: rows.filter((r) => !r.fetch_ok).length,
     },
   };
 }

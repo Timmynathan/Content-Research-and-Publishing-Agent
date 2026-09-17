@@ -2,7 +2,7 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { requireStaff, supabaseAdmin } from "./_lib/auth.js";
 import { HttpError, StageError } from "./_lib/errors.js";
 import { runResearch } from "./stages/research.js";
-import { selectSources } from "./stages/selectSources.js";
+import { finalizeSources } from "./stages/selectSources.js";
 import { planContent } from "./stages/plan.js";
 import { draftContent } from "./stages/draft.js";
 import { runEvaluation, decideNextStage } from "./stages/evaluate.js";
@@ -22,7 +22,7 @@ import type { ContentRequestRow, Stage } from "../shared/types.js";
 // no-op.
 const handlers: Record<Stage, StageHandler> = {
   requested: runResearch,
-  researching: selectSources,
+  researching: finalizeSources,
   // Not a generic "run the next step" stage — it requires an explicit
   // human choice (search again, supply material, or proceed anyway),
   // each with its own payload. Those go through api/sources.ts, not the
@@ -47,6 +47,47 @@ const handlers: Record<Stage, StageHandler> = {
   queued: publishContent,
   published: notImplementedStage("published (terminal)"),
 };
+
+// Stages that exist only as an internal handoff, not a point where a
+// human needs to act — reaching one of these as a nextStage should run
+// its handler immediately, in the same request, instead of parking there
+// for a separate advance() call.
+// - 'planned' is reached from 'sources_selected' and always just needs
+//   draftContent to run next — planning only produces outline options
+//   (title, angle, keywords) with no way to act on them before drafting
+//   anyway (nothing lets a manager drop or edit one option here), so
+//   pausing on the outline before writing the actual article text is a
+//   click with no real decision behind it.
+// - 'drafting' is reached from both 'planned' (first draft) and
+//   'revising' (a revision loop) and always just needs scoring; there's
+//   no decision for a human to make there.
+// - 'evaluating' is reached right after 'drafting' finishes scoring and
+//   always just needs decideNextStage to run — that handler is a pure,
+//   already-computed decision from the numbers (see its doc comment in
+//   evaluate.ts), not something a human weighs in on. It lands on
+//   'revising' (needs a real "Revise draft" click — that one actually
+//   calls Claude) or 'ready_for_review' (needs a reviewer), both genuine
+//   stopping points; 'evaluating' itself never was one.
+// - 'queued' is reached from 'adapting' and always just needs
+//   publishContent to run next — queueing and publishing read as the
+//   same action to a manager (the button said "Queue for publishing" and
+//   the next one said "Publish"), and there's no human choice between
+//   them either: LinkedIn/X always land in the queue for manual posting
+//   regardless, and the newsletter always sends immediately once queued.
+// - 'researching' is reached from 'requested' (see research.ts) and its
+//   own handler (finalizeSources) makes no AI judgment call anymore —
+//   it's a mechanical "mark everything fetched as selected" pass, with
+//   the actual curation happening afterward on the Sources tab
+//   (check/uncheck). Nothing here needs a human decision, so a fresh
+//   request now goes straight from creation to 'sources_selected' (or
+//   'sources_insufficient') without resting at 'researching' at all.
+//   'researching' can still be reached on its own via "Go back" (see
+//   api/sources.ts's go_back action) when a manager wants to add more
+//   sources after the fact — that path writes the stage directly and
+//   doesn't go through this dispatch loop, so it's unaffected: the
+//   request rests there until the manager clicks the stage-action button
+//   again, same as before.
+const AUTO_ADVANCE_STAGES = new Set<Stage>(["drafting", "queued", "researching", "planned", "evaluating"]);
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") {
@@ -85,60 +126,72 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       throw new HttpError(403, "Only a reviewer can act on a request awaiting review.");
     }
 
-    const stageHandler = handlers[request.stage];
-    if (!stageHandler) {
-      throw new HttpError(400, `No handler registered for stage '${request.stage}'`);
-    }
-
     const { requestId: _requestId, ...payload } = req.body ?? {};
 
-    try {
-      const result = await stageHandler({
-        request,
-        userId: authedUser.userId,
-        role: authedUser.role,
-        supabase: supabaseAdmin,
-        payload,
-      });
+    let stage = request.stage;
 
-      const { error: eventError } = await supabaseAdmin.from("events").insert({
-        request_id: requestId,
-        stage: request.stage,
-        event: `${request.stage}_complete`,
-        ok: true,
-        detail: result.detail ?? null,
-      });
-      if (eventError) {
-        throw new HttpError(500, `Stage succeeded but failed to write its event row: ${eventError.message}`);
+    while (true) {
+      const stageHandler = handlers[stage];
+      if (!stageHandler) {
+        throw new HttpError(400, `No handler registered for stage '${stage}'`);
       }
 
-      const { error: updateError } = await supabaseAdmin
-        .from("content_requests")
-        .update({ stage: result.nextStage, stage_error: null })
-        .eq("id", requestId);
-      if (updateError) {
-        throw new HttpError(500, `Stage succeeded but failed to advance the request: ${updateError.message}`);
+      try {
+        const result = await stageHandler({
+          request: { ...request, stage },
+          userId: authedUser.userId,
+          role: authedUser.role,
+          supabase: supabaseAdmin,
+          payload,
+        });
+
+        const { error: eventError } = await supabaseAdmin.from("events").insert({
+          request_id: requestId,
+          stage,
+          event: `${stage}_complete`,
+          ok: true,
+          detail: result.detail ?? null,
+        });
+        if (eventError) {
+          throw new HttpError(500, `Stage succeeded but failed to write its event row: ${eventError.message}`);
+        }
+
+        const { error: updateError } = await supabaseAdmin
+          .from("content_requests")
+          .update({ stage: result.nextStage, stage_error: null })
+          .eq("id", requestId);
+        if (updateError) {
+          throw new HttpError(500, `Stage succeeded but failed to advance the request: ${updateError.message}`);
+        }
+
+        stage = result.nextStage;
+
+        if (!AUTO_ADVANCE_STAGES.has(stage)) {
+          res.status(200).json({ stage, stage_error: null });
+          return;
+        }
+        // else: an internal handoff stage — loop straight into its
+        // handler instead of returning and waiting for another call.
+      } catch (stageErr: any) {
+        // Never advance past a stage that failed, and never silently skip
+        // one: write the failure event, record stage_error, leave stage
+        // exactly where it was so a retry re-runs this same handler.
+        const message = stageErr instanceof Error ? stageErr.message : String(stageErr);
+        const raw = stageErr instanceof StageError ? stageErr.raw : undefined;
+
+        await supabaseAdmin.from("events").insert({
+          request_id: requestId,
+          stage,
+          event: `${stage}_failed`,
+          ok: false,
+          detail: { message, raw: raw ?? null },
+        });
+
+        await supabaseAdmin.from("content_requests").update({ stage_error: message }).eq("id", requestId);
+
+        res.status(200).json({ stage, stage_error: message });
+        return;
       }
-
-      res.status(200).json({ stage: result.nextStage, stage_error: null });
-    } catch (stageErr: any) {
-      // Never advance past a stage that failed, and never silently skip
-      // one: write the failure event, record stage_error, leave stage
-      // exactly where it was so a retry re-runs this same handler.
-      const message = stageErr instanceof Error ? stageErr.message : String(stageErr);
-      const raw = stageErr instanceof StageError ? stageErr.raw : undefined;
-
-      await supabaseAdmin.from("events").insert({
-        request_id: requestId,
-        stage: request.stage,
-        event: `${request.stage}_failed`,
-        ok: false,
-        detail: { message, raw: raw ?? null },
-      });
-
-      await supabaseAdmin.from("content_requests").update({ stage_error: message }).eq("id", requestId);
-
-      res.status(200).json({ stage: request.stage, stage_error: message });
     }
   } catch (err: any) {
     const status = err instanceof HttpError ? err.status : 500;

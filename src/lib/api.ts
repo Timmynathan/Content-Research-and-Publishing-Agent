@@ -62,6 +62,17 @@ export async function goBackToResearching(requestId: string): Promise<void> {
   await authedPost("/api/sources", { requestId, action: "go_back" });
 }
 
+/**
+ * The recovery path now that source selection is no longer a checkpoint
+ * the pipeline waits at: discards the current drafts (and everything
+ * built on them — evaluations, channel outputs) and reopens source
+ * editing, so a manager who doesn't like what the automation produced
+ * can fix the sources and let it run again from source selection.
+ */
+export async function changeSourcesAndRedraft(requestId: string): Promise<void> {
+  await authedPost("/api/sources", { requestId, action: "change_sources_and_redraft" });
+}
+
 export async function submitReviewDecision(
   requestId: string,
   decision: "approved" | "rejected",

@@ -61,14 +61,17 @@ export async function processReviewDecision(ctx: HandlerCtx): Promise<HandlerRes
     return { nextStage: "ready_for_review", detail: { decision: "rejected", draftId, comment } };
   }
 
-  // Approved: mark this option selected (and only this one), snapshot
-  // its content hash, record the approval, then hand off to 'approved'
-  // — the DB trigger require_approval_before_adapting is the actual
-  // enforcement that nothing reaches 'adapting' without this row
-  // existing; this handler is what makes it exist.
-  const { error: deselectError } = await supabase.from("drafts").update({ selected: false }).eq("request_id", request.id);
-  if (deselectError) throw new StageError(`Failed to clear prior selection: ${deselectError.message}`);
-
+  // Approved: mark this option selected, snapshot its content hash,
+  // record the approval, then delete every other option's draft row —
+  // the DB trigger require_approval_before_adapting is the actual
+  // enforcement that nothing reaches 'adapting' without the approval row
+  // existing; this handler is what makes it exist. Deleting the losing
+  // options (not just leaving them unselected) is safe at this point:
+  // nothing downstream (channel_outputs, publish_queue) exists yet for
+  // any draft, since adaptation only happens after this. It cascades to
+  // their evaluations and any earlier rejection records tied to them,
+  // which is an acceptable loss — the point is the manager's Drafts tab
+  // shouldn't keep accumulating discarded alternatives forever.
   const { error: selectError } = await supabase.from("drafts").update({ selected: true }).eq("id", draft.id);
   if (selectError) throw new StageError(`Failed to mark draft selected: ${selectError.message}`);
 
@@ -81,6 +84,9 @@ export async function processReviewDecision(ctx: HandlerCtx): Promise<HandlerRes
     decided_by: userId,
   });
   if (insertError) throw new StageError(`Failed to record approval: ${insertError.message}`);
+
+  const { error: deleteError } = await supabase.from("drafts").delete().eq("request_id", request.id).neq("id", draft.id);
+  if (deleteError) throw new StageError(`Failed to remove the other draft options: ${deleteError.message}`);
 
   return { nextStage: "approved", detail: { decision: "approved", draftId, comment } };
 }

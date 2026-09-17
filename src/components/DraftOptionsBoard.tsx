@@ -3,6 +3,7 @@ import type { DraftRow, EvaluationRow, SourceRow } from "../../shared/types";
 import DraftCard from "./DraftCard";
 import StatusPill from "./ui/StatusPill";
 import IconButton from "./ui/IconButton";
+import Button from "./ui/Button";
 import { CloseIcon } from "./ui/icons";
 
 /**
@@ -12,15 +13,23 @@ import { CloseIcon } from "./ui/icons";
  * claims list just to see the next option existed. Clicking a preview
  * pops the full DraftCard (scores, claims, revision history included) up
  * in an overlay, leaving the grid underneath untouched.
+ *
+ * `selection`, when given, turns this from a read-only board (the
+ * manager's view) into a pick-one board (the reviewer's): a radio on
+ * each card and a "choose this option" action inside the expanded
+ * modal, both calling the same onSelect so picking works whether the
+ * reviewer decides from the grid or after reading the full option.
  */
 export default function DraftOptionsBoard({
   drafts,
   evaluations,
   sources,
+  selection,
 }: {
   drafts: DraftRow[];
   evaluations: EvaluationRow[];
   sources: SourceRow[];
+  selection?: { selectedId: string | null; onSelect: (draftId: string) => void };
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const expandedDraft = expandedId ? (drafts.find((d) => d.id === expandedId) ?? null) : null;
@@ -41,7 +50,13 @@ export default function DraftOptionsBoard({
 
   if (drafts.length <= 1) {
     return (
-      <div className="stack">
+      // Capped to the same width as the expanded-option modal below —
+      // .card has no max-width of its own (it just fills whatever
+      // container it's in), and .article-body's reading-width cap
+      // (68ch) left a wide, empty gutter to its right once this was the
+      // only draft left (e.g. after approval deletes the others) instead
+      // of the two- or three-column grid this used to sit in.
+      <div className="stack" style={{ maxWidth: 780 }}>
         <h3 style={{ margin: 0 }}>Article options</h3>
         {drafts.map((draft) => (
           <DraftCard
@@ -80,11 +95,25 @@ export default function DraftOptionsBoard({
                 }
               }}
             >
-              <div className="btn-row" style={{ marginBottom: 6 }}>
-                <StatusPill tone={evaluation ? (evaluation.passed ? "success" : "warning") : "neutral"}>
-                  {evaluation ? (evaluation.passed ? "meets rubric" : "below rubric") : "not yet scored"}
-                </StatusPill>
-              </div>
+              {(selection || evaluation) && (
+                <div className="btn-row" style={{ marginBottom: 6 }}>
+                  {selection && (
+                    <input
+                      type="radio"
+                      name="chosenDraft"
+                      checked={selection.selectedId === draft.id}
+                      onChange={() => selection.onSelect(draft.id)}
+                      onClick={(e) => e.stopPropagation()}
+                      aria-label={`Choose option ${draft.variant} to approve or reject`}
+                    />
+                  )}
+                  {evaluation && (
+                    <StatusPill tone={evaluation.passed ? "success" : "warning"}>
+                      {evaluation.passed ? "passed" : "failed"}
+                    </StatusPill>
+                  )}
+                </div>
+              )}
               <div className="list-row-title" style={{ marginBottom: 4 }}>
                 Option {draft.variant}: {draft.angle}
               </div>
@@ -124,6 +153,16 @@ export default function DraftOptionsBoard({
             <IconButton className="ui-modal-close" label="Close" onClick={() => setExpandedId(null)}>
               <CloseIcon />
             </IconButton>
+            {selection && (
+              <div className="btn-row" style={{ marginBottom: 10 }}>
+                <Button
+                  variant={selection.selectedId === expandedDraft.id ? "primary" : "secondary"}
+                  onClick={() => selection.onSelect(expandedDraft.id)}
+                >
+                  {selection.selectedId === expandedDraft.id ? "Chosen for approval/rejection" : "Choose this option"}
+                </Button>
+              </div>
+            )}
             <DraftCard
               draft={expandedDraft}
               evaluationsForDraft={evaluations.filter((e) => e.draft_id === expandedDraft.id)}
