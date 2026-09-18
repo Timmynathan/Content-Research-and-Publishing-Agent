@@ -39,14 +39,21 @@ const EDITABLE_STAGES = new Set(["sources_selected", "sources_insufficient"]);
 // become available again without re-scraping.
 const PRE_SELECTION_STAGES = new Set(["requested", "researching"]);
 
-// "Change sources and redraft" is for the drafting/review window only —
-// before a human has approved anything. It must NOT be reachable once a
-// draft is approved, adapted, queued, or published: deleting drafts at
-// that point cascades to the approval record and any publish_queue
-// entries too, which would erase the record of content that may already
-// be live. Correcting an approved/published piece needs a different,
-// more deliberate process than this lightweight unlock button.
-const REDRAFT_UNLOCKABLE_STAGES = new Set(["planned", "drafting", "evaluating", "revising", "ready_for_review"]);
+// "Change sources and redraft" is for the drafting/review window only.
+// It must NOT be reachable once channel outputs exist (adapted, queued,
+// or published): deleting drafts at that point would cascade to
+// channel_outputs and publish_queue entries too, which would erase the
+// record of content that may already be live. Correcting a
+// published piece needs a different, more deliberate process than this
+// lightweight unlock button. Includes 'rejected' — a reviewer's
+// rejection is otherwise a dead end with no way to try again. Includes
+// 'approved' too: since migrations/011, reaching 'approved' is fully
+// automatic (decideNextStage auto-selects the best-scoring passing
+// draft) rather than a human approval decision, and nothing downstream
+// (channel_outputs, publish_queue) exists for it yet, so it's still
+// safe to discard. Matches REDRAFT_UNLOCKABLE_STAGES in
+// src/pages/manager/RequestDetail.tsx.
+const REDRAFT_UNLOCKABLE_STAGES = new Set(["planned", "drafting", "evaluating", "revising", "ready_for_review", "approved", "rejected"]);
 
 interface ActionBody {
   requestId?: string;
@@ -387,7 +394,7 @@ async function handleChangeSourcesAndRedraft(request: ContentRequestRow, actorId
   if (!REDRAFT_UNLOCKABLE_STAGES.has(request.stage)) {
     const reason = EDITABLE_STAGES.has(request.stage) || request.stage === "requested" || request.stage === "researching"
       ? "nothing is locked yet"
-      : "the request has already been approved or gone past it, which needs a different process, not a source change";
+      : "channel outputs already exist for this request, which needs a different process, not a source change";
     throw new HttpError(409, `Cannot change sources at stage '${request.stage}': ${reason}.`);
   }
 

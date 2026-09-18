@@ -1,7 +1,7 @@
 import { StageError } from "../_lib/errors.js";
 import { sendNewsletter } from "../_lib/resend.js";
 import type { HandlerCtx, HandlerResult } from "./types.js";
-import type { ApprovalRow, ChannelOutputRow, PublishQueueRow } from "../../shared/types.js";
+import type { ChannelOutputRow, DraftRow, PublishQueueRow } from "../../shared/types.js";
 
 /**
  * Stage handler for 'queued' -> 'published'.
@@ -19,21 +19,19 @@ import type { ApprovalRow, ChannelOutputRow, PublishQueueRow } from "../../share
 export async function publishContent(ctx: HandlerCtx): Promise<HandlerResult> {
   const { request, supabase } = ctx;
 
-  const { data: approval, error: approvalError } = await supabase
-    .from("approvals")
-    .select("*")
+  const { data: draft, error: draftError } = await supabase
+    .from("drafts")
+    .select("id")
     .eq("request_id", request.id)
-    .eq("decision", "approved")
-    .order("decided_at", { ascending: false })
-    .limit(1)
-    .maybeSingle<ApprovalRow>();
-  if (approvalError) throw new StageError(`Failed to load approval: ${approvalError.message}`);
-  if (!approval) throw new StageError("No approved decision found for this request.");
+    .eq("selected", true)
+    .maybeSingle<Pick<DraftRow, "id">>();
+  if (draftError) throw new StageError(`Failed to load the selected draft: ${draftError.message}`);
+  if (!draft) throw new StageError("No selected draft found for this request.");
 
   const { data: outputs, error: outputsError } = await supabase
     .from("channel_outputs")
     .select("*")
-    .eq("draft_id", approval.draft_id)
+    .eq("draft_id", draft.id)
     .returns<ChannelOutputRow[]>();
   if (outputsError) throw new StageError(`Failed to load channel outputs: ${outputsError.message}`);
 

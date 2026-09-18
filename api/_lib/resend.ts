@@ -21,12 +21,11 @@ export interface SendFailure {
   error: string;
 }
 
-/** Always sends to the configured test recipient — never a real subscriber list. */
-export async function sendNewsletter(subject: string, body: string): Promise<SendResult | SendFailure> {
+async function sendEmail(to: string, subject: string, body: string): Promise<SendResult | SendFailure> {
   try {
     const result = await getClient().emails.send({
       from: env.resendFrom,
-      to: env.resendTestRecipient,
+      to,
       subject,
       text: body,
       html: buildNewsletterHtml(subject, body),
@@ -42,4 +41,22 @@ export async function sendNewsletter(subject: string, body: string): Promise<Sen
   } catch (err: any) {
     return { ok: false, error: err?.message ?? String(err) };
   }
+}
+
+/** Always sends to the configured test recipient — never a real subscriber list. */
+export async function sendNewsletter(subject: string, body: string): Promise<SendResult | SendFailure> {
+  return sendEmail(env.resendTestRecipient, subject, body);
+}
+
+/**
+ * An internal ops notification to one staff member's real address (from
+ * Supabase Auth — see _lib/staffNotifications.ts), not a newsletter
+ * subscriber — sending to their actual inbox is the point, unlike
+ * sendNewsletter above. Note this still goes through the same Resend
+ * account: on a sandbox/no-verified-domain setup, Resend itself will
+ * only actually deliver to the account owner's verified address
+ * regardless of what's passed here.
+ */
+export async function sendStaffEmail(to: string, subject: string, body: string): Promise<SendResult | SendFailure> {
+  return sendEmail(to, subject, body);
 }

@@ -47,7 +47,9 @@ export function describeRevisionEvent(e: EventRow): string {
     // reviseContent (revising -> drafting).
     if (detail?.note) return "No changes were needed this round.";
     const revised = typeof detail?.revised === "number" ? detail.revised : 0;
+    const reviewerRequested = typeof detail?.reviewerRequested === "number" ? detail.reviewerRequested : 0;
     const plural = revised === 1 ? "draft" : "drafts";
+    if (reviewerRequested > 0) return `Rewrote ${revised} ${plural} based on the reviewer's feedback.`;
     return `Rewrote the weak parts of ${revised} ${plural}.`;
   }
 

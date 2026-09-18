@@ -8,3 +8,4 @@ dist
 scripts/seed-staff.config.json
 supabase/.temp
 .env*
+__MACOSX/

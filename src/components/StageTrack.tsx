@@ -23,13 +23,14 @@ export default function StageTrack({
   onRetry?: () => void;
   retrying?: boolean;
 }) {
-  // 'sources_insufficient' is a branch off 'researching', not a step on
-  // the happy path (see shared/types.ts) — render the linear track as
-  // if still at 'researching' (done, since we've moved past it) and
-  // append a distinct warning node for the branch instead of trying to
-  // fit it into the group index's past/current logic.
+  // 'sources_insufficient' and 'rejected' are branches off the happy
+  // path (see shared/types.ts) — render the linear track as if still at
+  // the stage they branched from (done, since we've moved past it) and
+  // append a distinct node for the branch instead of trying to fit it
+  // into the group index's past/current logic.
   const isInsufficient = stage === "sources_insufficient";
-  const effectiveStage: HappyStage = isInsufficient ? "researching" : stage;
+  const isRejected = stage === "rejected";
+  const effectiveStage: HappyStage = isInsufficient ? "researching" : isRejected ? "ready_for_review" : stage;
   const currentGroupIndex = groupIndexForStage(effectiveStage);
 
   function node(key: string, label: string, i: number, clickTarget: Stage | null, isBranch: boolean) {
@@ -82,6 +83,7 @@ export default function StageTrack({
               "sources_insufficient",
               true,
             )}
+          {isRejected && node("rejected", STAGE_LABELS.rejected, STAGE_GROUPS.length, "rejected", true)}
         </div>
       </div>
 

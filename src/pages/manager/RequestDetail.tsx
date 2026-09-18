@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { supabase } from "../../lib/supabaseClient";
 import {
@@ -9,10 +9,10 @@ import {
   changeSourcesAndRedraft,
   markChannelOutputPosted,
   generateShortTitle,
+  reviseChannelOutputWithPrompt,
   ApiError,
 } from "../../lib/api";
 import type {
-  ApprovalRow,
   ChannelOutputRow,
   ContentRequestRow,
   DraftRow,
@@ -34,6 +34,7 @@ import { copyAndOpen, type CopyOpenableChannel } from "../../lib/copyAndOpen";
 import { STAGE_LABELS } from "../../lib/stageLabels";
 import { formatDateTime } from "../../lib/time";
 import { describeRevisionEvent } from "../../lib/revisionLog";
+import Field from "../../components/ui/Field";
 import Button from "../../components/ui/Button";
 import IconButton from "../../components/ui/IconButton";
 import StatusPill from "../../components/ui/StatusPill";
@@ -65,14 +66,21 @@ const EDITABLE_STAGES = new Set(["sources_selected", "sources_insufficient"]);
 // path now that source selection isn't a checkpoint the pipeline waits
 // at. Matches REDRAFT_UNLOCKABLE_STAGES in api/sources.ts. Discards the
 // current drafts and reopens source editing so the run can go again from
-// source selection with different sources.
-const REDRAFT_UNLOCKABLE_STAGES = new Set(["planned", "drafting", "evaluating", "revising", "ready_for_review"]);
+// source selection with different sources. Includes 'rejected' — a
+// reviewer's rejection is otherwise a dead end with no way to try again.
+// Includes 'approved' too: since migrations/011, reaching it is fully
+// automatic (decideNextStage auto-selects the best-scoring passing
+// draft — see evaluate.ts) rather than a human approval decision, so
+// there's no longer a real decision being protected by excluding it —
+// the manager should still get a chance to redraft before spending real
+// API cost adapting a draft they don't like into channels.
+const REDRAFT_UNLOCKABLE_STAGES = new Set(["planned", "drafting", "evaluating", "revising", "ready_for_review", "approved", "rejected"]);
 
 // Each stage's output gets its own view rather than one long scrolling
 // page — this maps a stage to the tab that shows what happened there.
 type TabId = "sources" | "drafts" | "channels" | "events";
 const SOURCES_TAB_STAGES = new Set(["requested", "researching", "sources_selected", "sources_insufficient"]);
-const DRAFTS_TAB_STAGES = new Set(["planned", "drafting", "evaluating", "revising", "ready_for_review", "approved"]);
+const DRAFTS_TAB_STAGES = new Set(["planned", "drafting", "evaluating", "revising", "ready_for_review", "approved", "rejected"]);
 function tabForStage(stage: Stage): TabId {
   if (SOURCES_TAB_STAGES.has(stage)) return "sources";
   if (DRAFTS_TAB_STAGES.has(stage)) return "drafts";
@@ -138,7 +146,6 @@ export default function RequestDetail() {
   const [events, setEvents] = useState<EventRow[]>([]);
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
   const [evaluations, setEvaluations] = useState<EvaluationRow[]>([]);
-  const [approvals, setApprovals] = useState<ApprovalRow[]>([]);
   const [channelOutputs, setChannelOutputs] = useState<ChannelOutputRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [advancing, setAdvancing] = useState(false);
@@ -151,6 +158,13 @@ export default function RequestDetail() {
   const [copiedOutputId, setCopiedOutputId] = useState<string | null>(null);
   const [copyOutputError, setCopyOutputError] = useState<string | null>(null);
   const [eventStageFilter, setEventStageFilter] = useState<Stage | null>(null);
+  const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
+  // Keyed by channel_output id, since multiple channel outputs can each
+  // have their own pending revision simultaneously (e.g. a reviewer
+  // sends back both LinkedIn and X at once).
+  const [channelPrompts, setChannelPrompts] = useState<Record<string, string>>({});
+  const [revisingChannelId, setRevisingChannelId] = useState<string | null>(null);
+  const [channelReviseErrors, setChannelReviseErrors] = useState<Record<string, string>>({});
   const [activeTab, setActiveTab] = useState<TabId>("sources");
   // Only steer the tab automatically the first time the request loads —
   // once a manager has picked a tab by hand, later polls updating
@@ -205,14 +219,6 @@ export default function RequestDetail() {
       setEvaluations([]);
       setChannelOutputs([]);
     }
-
-    const { data: approvalsData } = await supabase
-      .from("approvals")
-      .select("*")
-      .eq("request_id", id)
-      .order("decided_at", { ascending: false })
-      .returns<ApprovalRow[]>();
-    setApprovals(approvalsData ?? []);
   }, [id]);
 
   useEffect(() => {
@@ -250,9 +256,11 @@ export default function RequestDetail() {
   // unattended — no click required anywhere along the way. The pipeline
   // stops in exactly two situations: it can't responsibly continue (a
   // stage_error, or too few sources — see sources_insufficient, which
-  // isn't in the set below and so is never auto-advanced past), or a
-  // human is genuinely required (the review gate at ready_for_review,
-  // also not in the set). Everything else auto-advances:
+  // isn't in the set below and so is never auto-advanced past; the same
+  // applies to 'ready_for_review', now reached only when nothing ever
+  // passes evaluation — see decideNextStage in evaluate.ts), or a human
+  // is genuinely required (channel-level review at 'adapting' — see
+  // allChannelsApproved below). Everything else auto-advances:
   // - 'requested': the very first research pass.
   // - 'sources_selected': skipped only if this specific request opted
   //   into review_sources_before_drafting — the one deliberate,
@@ -286,6 +294,51 @@ export default function RequestDetail() {
       handleAdvance();
     }
   }, [request, advancing, advanceError]);
+
+  // Seeds the editable AI-revision prompt with the reviewer's own
+  // comment the moment their request first shows up, keyed per
+  // channel_output id since several can be pending at once.
+  const seededChannelPromptIds = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const pending = channelOutputs.filter((c) => c.revision_requested_comment);
+    const stillPending = new Set(pending.map((c) => c.id));
+    let changed = false;
+    const next = { ...channelPrompts };
+    for (const c of pending) {
+      if (!seededChannelPromptIds.current.has(c.id)) {
+        seededChannelPromptIds.current.add(c.id);
+        next[c.id] = c.revision_requested_comment ?? "";
+        changed = true;
+      }
+    }
+    for (const id of seededChannelPromptIds.current) {
+      if (!stillPending.has(id)) seededChannelPromptIds.current.delete(id);
+    }
+    if (changed) setChannelPrompts(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelOutputs]);
+
+  async function handleReviseChannelWithPrompt(channelOutputId: string) {
+    if (!id) return;
+    const prompt = channelPrompts[channelOutputId] ?? "";
+    if (!prompt.trim()) {
+      setChannelReviseErrors((prev) => ({ ...prev, [channelOutputId]: "Enter what should change before revising." }));
+      return;
+    }
+    setRevisingChannelId(channelOutputId);
+    setChannelReviseErrors((prev) => ({ ...prev, [channelOutputId]: "" }));
+    try {
+      await reviseChannelOutputWithPrompt(id, channelOutputId, prompt.trim());
+      await load();
+    } catch (err) {
+      setChannelReviseErrors((prev) => ({
+        ...prev,
+        [channelOutputId]: err instanceof ApiError ? err.message : "Failed to revise this channel output.",
+      }));
+    } finally {
+      setRevisingChannelId(null);
+    }
+  }
 
   async function handleAdvance() {
     if (!id) return;
@@ -385,6 +438,7 @@ export default function RequestDetail() {
     }
   }
 
+
   async function handleCopyAndOpen(outputId: string, channel: CopyOpenableChannel, body: string) {
     setCopyOutputError(null);
     try {
@@ -413,15 +467,24 @@ export default function RequestDetail() {
   const isLocked = !isEditable && request.stage !== "requested" && request.stage !== "researching";
   const zeroRetrieved = retrievedCount === 0;
   const showAddSourceForms = request.stage === SHOW_ADD_SOURCE_FORMS_STAGE;
-  // 'published' is the actual end of the pipeline — nothing to advance
-  // to, so there's no "next stage" to run. Without this, the button
-  // stayed visible and clicking it hit the terminal stub handler,
-  // producing a "not implemented yet" error that reads like a bug for
-  // something that's actually just "you're done." Terminal regardless
-  // of stage_error — a stray error from an earlier click here can never
-  // be fixed by "retrying," since there's still nothing to run.
-  const isTerminal = request.stage === "published";
+  // 'published' and 'rejected' are both dead ends for the automation —
+  // there's no "next stage" for either. Without this, the button stayed
+  // visible and clicking it hit the terminal stub handler, producing a
+  // "not implemented yet" error that reads like a bug for something
+  // that's actually just "there's nothing left to run." Terminal
+  // regardless of stage_error — a stray error from an earlier click
+  // here can never be fixed by "retrying," since there's still nothing
+  // to run. ('rejected' still offers "Change sources and redraft" as
+  // its own separate recovery path — see REDRAFT_UNLOCKABLE_STAGES.)
+  const isTerminal = request.stage === "published" || request.stage === "rejected";
   const hasError = !isTerminal && Boolean(request.stage_error);
+
+  // Gates the "Publish" button at 'adapting' — queueContent enforces
+  // this server-side too (see api/_stages/queue.ts), this is just so
+  // the button doesn't sit there inviting a click that's guaranteed to
+  // fail with a stage_error.
+  const pendingChannels = channelOutputs.filter((c) => !c.approved_at);
+  const allChannelsApproved = request.stage !== "adapting" || (channelOutputs.length > 0 && pendingChannels.length === 0);
 
   // Just the single most recent step of the auto-revise loop (events is
   // fetched newest-first, so this is a find, not a filtered list) — a
@@ -467,12 +530,20 @@ export default function RequestDetail() {
           retrying={advancing}
         />
 
-        {!isInsufficient && !isTerminal && !hasError && request.stage !== "ready_for_review" && (
+        {!isInsufficient && !isTerminal && !hasError && request.stage !== "ready_for_review" && allChannelsApproved && (
           <div className="btn-row" style={{ marginTop: 12 }}>
             <Button variant="primary" onClick={handleAdvance} loading={advancing}>
               {STAGE_ACTION_LABELS[request.stage] ?? `Run next stage (${STAGE_LABELS[request.stage]})`}
             </Button>
           </div>
+        )}
+
+        {request.stage === "adapting" && !allChannelsApproved && (
+          <p className="subtitle" style={{ marginTop: 12 }}>
+            Waiting on the reviewer: {pendingChannels.length} channel{pendingChannels.length === 1 ? "" : "s"} still
+            need{pendingChannels.length === 1 ? "s" : ""} sign-off before this can be published. See the Channel
+            outputs tab.
+          </p>
         )}
 
         {REDRAFT_UNLOCKABLE_STAGES.has(request.stage) && (
@@ -501,18 +572,27 @@ export default function RequestDetail() {
           the automation talking to you, not as more pipeline UI. */}
       {(isTerminal || advanceError || (request.stage === "ready_for_review" && !hasError) || latestRevisionEvent) && (
         <div className="stack stack-sm">
-          {isTerminal && (
+          {isTerminal && request.stage === "published" && (
             <AutomationMessage>
               This request is fully published. There's nothing further to run.
               {request.stage_error && " (A stray click here earlier produced an error message that can be ignored.)"}
             </AutomationMessage>
           )}
 
+          {isTerminal && request.stage === "rejected" && (
+            <AutomationMessage tone="danger">
+              This request was rejected. Nothing further will run here. Use "Change sources and redraft" below if you
+              want to try again.
+            </AutomationMessage>
+          )}
+
           {advanceError && <AutomationMessage tone="danger">{advanceError}</AutomationMessage>}
 
           {request.stage === "ready_for_review" && !hasError && (
-            <AutomationMessage>
-              Waiting for a reviewer to approve or reject this draft. There's nothing to run here yet.
+            <AutomationMessage tone="danger">
+              No drafted option passed evaluation, even after the revision limit — there's nothing here worth
+              adapting or publishing as-is. Use "Change sources and redraft" below to try again with different
+              sources, or revisit the brief.
             </AutomationMessage>
           )}
 
@@ -627,24 +707,7 @@ export default function RequestDetail() {
       {activeTab === "drafts" && (
         <div className="stack">
           {drafts.length === 0 && <EmptyState message="No article drafts yet." />}
-
           {drafts.length > 0 && <DraftOptionsBoard drafts={drafts} evaluations={evaluations} sources={sources} />}
-
-          {approvals.length > 0 && (
-            <div className="card">
-              <h3>Review decisions</h3>
-              {approvals.map((a) => (
-                <div key={a.id} className="list-row">
-                  <div className="list-row-head">
-                    <span className="list-row-title">{a.decision === "approved" ? "Approved" : "Rejected"}</span>
-                    <StatusPill tone={a.decision === "approved" ? "success" : "danger"}>{a.decision}</StatusPill>
-                  </div>
-                  <div className="list-row-meta">{formatDateTime(a.decided_at)}</div>
-                  {a.comment && <div className="list-row-meta">{a.comment}</div>}
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       )}
 
@@ -656,7 +719,12 @@ export default function RequestDetail() {
             <div key={c.id} className="card">
               <div className="list-row-head">
                 <ChannelBadge channel={c.channel} />
-                <StatusPill tone={c.valid ? "success" : "danger"}>{c.valid ? "channel-ready" : "invalid"}</StatusPill>
+                <div className="btn-row">
+                  <StatusPill tone={c.valid ? "success" : "danger"}>{c.valid ? "channel-ready" : "invalid"}</StatusPill>
+                  {c.approved_at && <StatusPill tone="success">approved</StatusPill>}
+                  {c.revision_requested_comment && <StatusPill tone="warning">revision requested</StatusPill>}
+                  {!c.approved_at && !c.revision_requested_comment && <StatusPill tone="neutral">awaiting review</StatusPill>}
+                </div>
               </div>
 
               <div style={{ marginTop: 10 }}>
@@ -673,6 +741,32 @@ export default function RequestDetail() {
                 <summary style={{ fontSize: 12, color: "var(--text-muted)" }}>Raw text</summary>
                 <p style={{ whiteSpace: "pre-wrap", fontSize: 13, marginTop: 6 }}>{c.body}</p>
               </details>
+
+              {c.revision_requested_comment && (
+                <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+                  <p style={{ marginBottom: 8 }}>
+                    <strong>Reviewer's note:</strong> {c.revision_requested_comment}
+                  </p>
+                  {channelReviseErrors[c.id] && <ErrorState message={channelReviseErrors[c.id]} />}
+                  <Field label="Prompt — pre-filled with the reviewer's note, edit it however you like" htmlFor={`channel-revise-${c.id}`}>
+                    <textarea
+                      id={`channel-revise-${c.id}`}
+                      className="ui-textarea"
+                      value={channelPrompts[c.id] ?? ""}
+                      onChange={(e) => setChannelPrompts((prev) => ({ ...prev, [c.id]: e.target.value }))}
+                    />
+                  </Field>
+                  <div className="btn-row" style={{ marginTop: 10 }}>
+                    <Button
+                      variant="primary"
+                      onClick={() => handleReviseChannelWithPrompt(c.id)}
+                      loading={revisingChannelId === c.id}
+                    >
+                      Revise with AI
+                    </Button>
+                  </div>
+                </div>
+              )}
 
               {c.valid && c.channel !== "newsletter" && (
                 <div className="btn-row" style={{ marginTop: 10 }}>
@@ -716,7 +810,7 @@ export default function RequestDetail() {
                 <p className="subtitle">No events for this stage yet.</p>
               ) : (
                 <div className="ui-table-wrap">
-                  <table>
+                  <table className="ui-table">
                     <thead>
                       <tr>
                         <th>When</th>
@@ -727,14 +821,28 @@ export default function RequestDetail() {
                     </thead>
                     <tbody>
                       {filteredEvents.map((e) => (
-                        <tr key={e.id}>
-                          <td className="mono">{formatDateTime(e.at)}</td>
-                          <td>{STAGE_LABELS[e.stage as keyof typeof STAGE_LABELS] ?? e.stage}</td>
-                          <td>{e.event}</td>
-                          <td>
-                            <StatusPill tone={e.ok ? "success" : "danger"}>{e.ok ? "ok" : "failed"}</StatusPill>
-                          </td>
-                        </tr>
+                        <Fragment key={e.id}>
+                          <tr
+                            className={e.detail != null ? "is-linked" : undefined}
+                            onClick={() => e.detail != null && setExpandedEventId((current) => (current === e.id ? null : e.id))}
+                          >
+                            <td className="mono">{formatDateTime(e.at)}</td>
+                            <td>{STAGE_LABELS[e.stage as keyof typeof STAGE_LABELS] ?? e.stage}</td>
+                            <td>{e.event}</td>
+                            <td>
+                              <StatusPill tone={e.ok ? "success" : "danger"}>{e.ok ? "ok" : "failed"}</StatusPill>
+                            </td>
+                          </tr>
+                          {expandedEventId === e.id && e.detail != null && (
+                            <tr>
+                              <td colSpan={4} className="wrap">
+                                <pre className="mono" style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                                  {JSON.stringify(e.detail, null, 2)}
+                                </pre>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
                       ))}
                     </tbody>
                   </table>

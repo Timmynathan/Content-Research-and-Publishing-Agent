@@ -178,11 +178,19 @@ export async function runEvaluation(ctx: HandlerCtx): Promise<HandlerResult> {
 }
 
 /**
- * Stage handler for 'evaluating' -> 'revising' | 'ready_for_review'.
+ * Stage handler for 'evaluating' -> 'revising' | 'approved' | 'ready_for_review'.
  *
- * Pure decision from already-computed scores — no LLM call, no new
- * writes beyond the stage transition. The model never decides whether
- * to keep revising; this does, mechanically, from the numbers.
+ * A pure decision from already-computed scores, no LLM call — the
+ * model never decides whether to keep revising, this does, mechanically,
+ * from the numbers. There's no human article-approval step anymore
+ * (see migrations/011): once nothing needs further revision, the
+ * best-scoring passing draft is selected automatically and the losing
+ * options are discarded, same cleanup the old human "approve" decision
+ * used to do — see adaptContent, which now reads drafts.selected
+ * directly instead of an approvals row. Only if NOTHING ever passes,
+ * even after the revision cap, does this stay at 'ready_for_review' —
+ * repurposed as a manager-facing dead end (nothing here for a reviewer
+ * to do; see REDRAFT_UNLOCKABLE_STAGES), not a human checkpoint.
  */
 export async function decideNextStage(ctx: HandlerCtx): Promise<HandlerResult> {
   const { request, supabase } = ctx;
@@ -226,13 +234,33 @@ export async function decideNextStage(ctx: HandlerCtx): Promise<HandlerResult> {
     };
   }
 
-  const stillFailing = drafts.filter((d) => !latestByDraft.get(d.id)!.passed);
+  const passing = drafts.filter((d) => latestByDraft.get(d.id)!.passed);
+
+  if (passing.length === 0) {
+    const stillFailing = drafts.filter((d) => !latestByDraft.get(d.id)!.passed);
+    return {
+      nextStage: "ready_for_review",
+      detail: { passedCount: 0, stillFailingAtCap: stillFailing.map((d) => d.id) },
+    };
+  }
+
+  // Highest overall score wins; a tie keeps whichever was found first
+  // (lowest variant number, since `drafts` was loaded in no particular
+  // guaranteed order but `passing` preserves that same order).
+  const best = passing.reduce((a, b) => (latestByDraft.get(b.id)!.overall > latestByDraft.get(a.id)!.overall ? b : a));
+
+  const { error: selectError } = await supabase.from("drafts").update({ selected: true }).eq("id", best.id);
+  if (selectError) throw new StageError(`Failed to mark the winning draft selected: ${selectError.message}`);
+
+  // Discarding the losing options mirrors what the old human "approve"
+  // decision used to do (see git history of review.ts) — nothing
+  // downstream exists yet for any draft at this point, since adaptation
+  // only happens after this.
+  const { error: deleteError } = await supabase.from("drafts").delete().eq("request_id", request.id).neq("id", best.id);
+  if (deleteError) throw new StageError(`Failed to remove the other draft options: ${deleteError.message}`);
 
   return {
-    nextStage: "ready_for_review",
-    detail: {
-      passedCount: drafts.length - stillFailing.length,
-      stillFailingAtCap: stillFailing.map((d) => d.id),
-    },
+    nextStage: "approved",
+    detail: { selectedDraftId: best.id, overall: latestByDraft.get(best.id)!.overall, passedCount: passing.length, totalOptions: drafts.length },
   };
 }

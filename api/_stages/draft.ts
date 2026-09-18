@@ -3,6 +3,7 @@ import { StageError } from "../_lib/errors.js";
 import { SEO_BEST_PRACTICES } from "../_lib/guidance.js";
 import { buildSourceContext } from "../_lib/sourceContext.js";
 import { verifyClaimGrounding } from "../_lib/grounding.js";
+import { searchImage } from "../_lib/pexels.js";
 import type { HandlerCtx, HandlerResult } from "./types.js";
 import type { DraftRow, SourceRow } from "../../shared/types.js";
 
@@ -110,6 +111,12 @@ export async function draftContent(ctx: HandlerCtx): Promise<HandlerResult> {
         .filter(Boolean)
         .join("\n");
 
+      // Run alongside the Claude call, not after — it doesn't depend on
+      // the drafted text, only the outline already in hand, and best-
+      // effort (see pexels.ts) means it can never be what makes this
+      // draft fail.
+      const imagePromise = searchImage(draft.outline.primary_keyword || draft.outline.title);
+
       let result: DraftToolInput;
       try {
         result = await callClaudeForJson<DraftToolInput>({
@@ -138,12 +145,23 @@ export async function draftContent(ctx: HandlerCtx): Promise<HandlerResult> {
       }
 
       const verifiedSections = verifyClaimGrounding(sections, selectedSourceIds);
-      return { draftId: draft.id, sections: verifiedSections };
+      const image = await imagePromise;
+      return { draftId: draft.id, sections: verifiedSections, image };
     }),
   );
 
-  for (const { draftId, sections } of results) {
-    const { error: updateError } = await supabase.from("drafts").update({ sections }).eq("id", draftId);
+  for (const { draftId, sections, image } of results) {
+    const { error: updateError } = await supabase
+      .from("drafts")
+      .update({
+        sections,
+        image_url: image?.url ?? null,
+        image_alt: image?.alt ?? null,
+        image_photographer: image?.photographer ?? null,
+        image_photographer_url: image?.photographerUrl ?? null,
+        image_pexels_url: image?.pexelsUrl ?? null,
+      })
+      .eq("id", draftId);
     if (updateError) {
       throw new StageError(`Failed to save drafted sections: ${updateError.message}`, { draftId });
     }
@@ -156,6 +174,6 @@ export async function draftContent(ctx: HandlerCtx): Promise<HandlerResult> {
 
   return {
     nextStage: "drafting",
-    detail: { draftCount: results.length, flaggedClaims: flaggedCount },
+    detail: { draftCount: results.length, flaggedClaims: flaggedCount, imagesFound: results.filter((r) => r.image).length },
   };
 }

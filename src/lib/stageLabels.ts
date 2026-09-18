@@ -14,4 +14,5 @@ export const STAGE_LABELS: Record<Stage, string> = {
   adapting: "Adapting",
   queued: "Queued",
   published: "Published",
+  rejected: "Rejected",
 };

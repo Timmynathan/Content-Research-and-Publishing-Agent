@@ -114,6 +114,14 @@ export default function DraftOptionsBoard({
                   )}
                 </div>
               )}
+              {draft.image_url && (
+                <img
+                  src={draft.image_url}
+                  alt={draft.image_alt ?? ""}
+                  style={{ width: "100%", height: 120, objectFit: "cover", borderRadius: 6, marginBottom: 8, display: "block" }}
+                />
+              )}
+
               <div className="list-row-title" style={{ marginBottom: 4 }}>
                 Option {draft.variant}: {draft.angle}
               </div>

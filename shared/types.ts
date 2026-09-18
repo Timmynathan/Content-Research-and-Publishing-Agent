@@ -20,13 +20,14 @@ export const STAGE_ORDER = [
 
 export type HappyStage = (typeof STAGE_ORDER)[number];
 
-// 'sources_insufficient' is a branch off 'researching', not a step on
-// the happy path — deliberately excluded from STAGE_ORDER so the
-// progress track doesn't imply every request passes through it. It's
-// still a first-class Stage value: content_requests.stage can equal it,
+// 'sources_insufficient' and 'rejected' are branches off the happy path
+// (off 'researching' and 'ready_for_review' respectively), not steps on
+// it — deliberately excluded from STAGE_ORDER so the progress track
+// doesn't imply every request passes through them. Both are still
+// first-class Stage values: content_requests.stage can equal either,
 // and every Stage-keyed dispatch (e.g. advance.ts's handler table) must
-// account for it.
-export type Stage = HappyStage | "sources_insufficient";
+// account for them.
+export type Stage = HappyStage | "sources_insufficient" | "rejected";
 
 // Below this many SELECTED (usable) sources, a request lands at
 // 'sources_insufficient' instead of auto-advancing to
@@ -173,7 +174,14 @@ export interface DraftRow {
   outline: DraftOutline;
   sections: DraftSection[];
   attempt: number;
+  /** Auto-set by decideNextStage (evaluate.ts) on whichever passing draft scores highest — see migrations/011. There's no human article-approval step anymore. */
   selected: boolean;
+  /** A Pexels stock photo fetched once in draft.ts — see migrations/009 and _lib/pexels.ts. Null if PEXELS_API_KEY isn't set or no result was found; never blocks drafting. */
+  image_url: string | null;
+  image_alt: string | null;
+  image_photographer: string | null;
+  image_photographer_url: string | null;
+  image_pexels_url: string | null;
   created_at: string;
 }
 
@@ -240,10 +248,20 @@ export interface ChannelOutputRow {
   body: string;
   validation: unknown;
   valid: boolean;
+  /** Set once a reviewer approves this specific channel's output — see migrations/010 and api/channelReview.ts. Required (alongside every sibling channel_output for the draft) before queueContent will move the request to 'queued'. */
+  approved_at: string | null;
+  approved_by: string | null;
+  /** Set by a reviewer's 'revise' action, cleared once api/_stages/channelRevise.ts processes it. Non-null means "a reviewer sent exactly this channel's output back with this note, still unresolved." */
+  revision_requested_comment: string | null;
   created_at: string;
 }
 
-export type ApprovalDecision = "approved" | "rejected";
+// No app code writes to the `approvals` table anymore — the article-
+// level human review step it recorded (approve/reject/revise a draft)
+// was removed; see migrations/011. These types are kept only because
+// the table itself is left in place non-destructively, as a historical
+// record for any request that went through the old flow.
+export type ApprovalDecision = "approved" | "rejected" | "revise";
 
 export interface ApprovalRow {
   id: string;

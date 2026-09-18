@@ -7,7 +7,6 @@ import { planContent } from "./_stages/plan.js";
 import { draftContent } from "./_stages/draft.js";
 import { runEvaluation, decideNextStage } from "./_stages/evaluate.js";
 import { reviseContent } from "./_stages/revise.js";
-import { processReviewDecision } from "./_stages/review.js";
 import { adaptContent } from "./_stages/adapt.js";
 import { queueContent } from "./_stages/queue.js";
 import { publishContent } from "./_stages/publish.js";
@@ -41,7 +40,20 @@ const handlers: Record<Stage, StageHandler> = {
   // unscored current attempt, whether that's everything on the first
   // pass or just the just-revised draft(s) here.
   revising: reviseContent,
-  ready_for_review: processReviewDecision,
+  // No human decision here anymore (see migrations/011) — reached only
+  // when NO drafted option ever passes evaluation, even after the
+  // revision cap (see decideNextStage in evaluate.ts). A dead end for
+  // the automation, same shape as 'sources_insufficient': the manager's
+  // only way forward is "Change sources and redraft." This stub exists
+  // only so the dispatch table stays total.
+  ready_for_review: notImplementedStage(
+    "ready_for_review has no automated next step — every drafted option failed evaluation even after revision. Use \"Change sources and redraft.\"",
+  ),
+  // Dead now that there's no human article-approval decision left to
+  // reject (see migrations/011) — kept only so the dispatch table and
+  // the Stage type stay total for any request that reached this stage
+  // under the old flow.
+  rejected: notImplementedStage("rejected (terminal)"),
   approved: adaptContent,
   adapting: queueContent,
   queued: publishContent,
@@ -116,14 +128,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!request) {
       res.status(404).json({ error: "Content request not found" });
       return;
-    }
-
-    // A manager must not be able to approve their own request by
-    // calling this endpoint directly — role check happens here, before
-    // dispatch, in addition to the identity check inside review.ts and
-    // the forbid_self_approval DB trigger, which is the real backstop.
-    if (request.stage === "ready_for_review" && authedUser.role !== "reviewer") {
-      throw new HttpError(403, "Only a reviewer can act on a request awaiting review.");
     }
 
     const { requestId: _requestId, ...payload } = req.body ?? {};

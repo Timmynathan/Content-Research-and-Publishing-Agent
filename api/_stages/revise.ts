@@ -56,7 +56,10 @@ const REVISE_TOOL_SCHEMA = {
  * failing, for whichever draft(s) still need it and haven't hit the
  * attempt cap — not the whole article. Bumps attempt only on the drafts
  * it touches, then hands back to 'drafting' so the next evaluate pass
- * scores exactly (and only) what changed.
+ * scores exactly (and only) what changed. Runs unattended, the instant
+ * it's reached (see RequestDetail.tsx's auto-advance effect) — there's
+ * no human decision involved here, only the rubric's own numbers (see
+ * decideNextStage in evaluate.ts).
  */
 export async function reviseContent(ctx: HandlerCtx): Promise<HandlerResult> {
   const { request, supabase } = ctx;

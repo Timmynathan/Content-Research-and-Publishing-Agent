@@ -73,13 +73,19 @@ export async function changeSourcesAndRedraft(requestId: string): Promise<void> 
   await authedPost("/api/sources", { requestId, action: "change_sources_and_redraft" });
 }
 
-export async function submitReviewDecision(
-  requestId: string,
-  decision: "approved" | "rejected",
-  draftId: string,
-  comment?: string,
-): Promise<AdvanceResponse> {
-  return authedPost("/api/advance", { requestId, decision, draftId, comment });
+/** Reviewer action: signs off on one channel output. See api/channelReview.ts. */
+export async function approveChannelOutput(requestId: string, channelOutputId: string): Promise<void> {
+  await authedPost("/api/channelReview", { requestId, action: "approve", channelOutputId });
+}
+
+/** Reviewer action: sends one channel output back with a note instead of approving it. */
+export async function requestChannelRevision(requestId: string, channelOutputId: string, comment: string): Promise<void> {
+  await authedPost("/api/channelReview", { requestId, action: "revise", channelOutputId, comment });
+}
+
+/** Manager action: runs the AI revision for a channel a reviewer sent back, optionally with an edited prompt. */
+export async function reviseChannelOutputWithPrompt(requestId: string, channelOutputId: string, prompt: string): Promise<void> {
+  await authedPost("/api/channelReview", { requestId, action: "revise_with_ai", channelOutputId, prompt });
 }
 
 export async function retryPublishQueueItem(queueItemId: string): Promise<void> {
