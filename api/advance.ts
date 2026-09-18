@@ -1,18 +1,18 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { requireStaff, supabaseAdmin } from "./_lib/auth.js";
 import { HttpError, StageError } from "./_lib/errors.js";
-import { runResearch } from "./stages/research.js";
-import { finalizeSources } from "./stages/selectSources.js";
-import { planContent } from "./stages/plan.js";
-import { draftContent } from "./stages/draft.js";
-import { runEvaluation, decideNextStage } from "./stages/evaluate.js";
-import { reviseContent } from "./stages/revise.js";
-import { processReviewDecision } from "./stages/review.js";
-import { adaptContent } from "./stages/adapt.js";
-import { queueContent } from "./stages/queue.js";
-import { publishContent } from "./stages/publish.js";
-import { notImplementedStage } from "./stages/notImplemented.js";
-import type { StageHandler } from "./stages/types.js";
+import { runResearch } from "./_stages/research.js";
+import { finalizeSources } from "./_stages/selectSources.js";
+import { planContent } from "./_stages/plan.js";
+import { draftContent } from "./_stages/draft.js";
+import { runEvaluation, decideNextStage } from "./_stages/evaluate.js";
+import { reviseContent } from "./_stages/revise.js";
+import { processReviewDecision } from "./_stages/review.js";
+import { adaptContent } from "./_stages/adapt.js";
+import { queueContent } from "./_stages/queue.js";
+import { publishContent } from "./_stages/publish.js";
+import { notImplementedStage } from "./_stages/notImplemented.js";
+import type { StageHandler } from "./_stages/types.js";
 import type { ContentRequestRow, Stage } from "../shared/types.js";
 
 // Dispatch table: keyed by the request's CURRENT stage. The handler for

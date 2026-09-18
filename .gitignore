@@ -7,3 +7,4 @@ dist
 .DS_Store
 scripts/seed-staff.config.json
 supabase/.temp
+.env*
